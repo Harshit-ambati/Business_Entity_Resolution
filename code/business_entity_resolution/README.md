@@ -6,6 +6,9 @@ This package currently supplies shared in-memory contracts, the fixed Source 1 v
 
 All Python source, including tests, is under `src/`. `src/ber/contracts.py` defines shared records and candidate/decision types; `src/ber/split.py` defines the holdout; `src/ber/cli.py` names the pipeline stages. Python 3.10 or newer is required. From this package directory, in a normal Python environment:
 
+`src/tests/` is the single test directory specified by `docs/CONTRACTS.md`; later workstreams should add tests there.
+`CandidateGroup` carries the S1 ID for its candidates. `Candidate.route_scores` may be omitted when a route has no numeric score; the field then contains an empty read-only mapping.
+
 ```powershell
 python -m pip install -r requirements.txt
 python -m pip install -e .

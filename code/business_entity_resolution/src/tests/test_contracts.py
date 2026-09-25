@@ -74,6 +74,13 @@ def test_candidate_requires_sorted_unique_routes():
         Candidate("S2-A", ("name", "name"), {})
 
 
+def test_candidate_route_scores_can_be_omitted():
+    candidate = Candidate("S2-A", ("name",))
+    assert dict(candidate.route_scores) == {}
+    with pytest.raises(TypeError):
+        candidate.route_scores["name"] = 1.0
+
+
 def test_synthetic_fixture_covers_required_cases():
     s1 = _rows("source1.tsv")
     s2 = _rows("source2.tsv")

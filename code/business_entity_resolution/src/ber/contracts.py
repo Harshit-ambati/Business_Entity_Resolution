@@ -66,7 +66,7 @@ class NormalizedRecord:
 class Candidate:
     candidate_entity_id: str
     retrieval_routes: tuple[str, ...]
-    route_scores: Mapping[str, float] = field(hash=False)
+    route_scores: Mapping[str, float] = field(default_factory=dict, hash=False)
 
     def __post_init__(self) -> None:
         validate_entity_id(self.candidate_entity_id, CANDIDATE_PREFIXES)

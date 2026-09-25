@@ -1,18 +1,34 @@
 """The H0 CLI exposes stable flags but cannot make a submission."""
 
+import os
 import subprocess
 import sys
+from pathlib import Path
 
 import ber.cli
 import pytest
 
 
+SRC_ROOT = Path(__file__).resolve().parents[1]
+
+
 def _run(*args):
-    return subprocess.run([sys.executable, "-m", "ber.cli", *args], capture_output=True, text=True, check=False)
+    env = os.environ.copy()
+    env["PYTHONPATH"] = str(SRC_ROOT)
+    # -S disables site-packages, including any editable/installed ber distribution.
+    return subprocess.run(
+        [sys.executable, "-S", "-m", "ber.cli", *args],
+        cwd=SRC_ROOT.parent,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
 
 
 def test_cli_import_and_help():
     assert callable(ber.cli.main)
+    assert Path(ber.cli.__file__).resolve() == SRC_ROOT / "ber" / "cli.py"
     result = _run("--help")
     assert result.returncode == 0
     for command in ber.cli.COMMANDS:
