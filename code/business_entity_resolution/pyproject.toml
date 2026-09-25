@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=42"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "business-entity-resolution"
+version = "0.1.0"
+description = "ML Challenge 2026 — Business Entity Resolution pipeline"
+requires-python = ">=3.9"
+dependencies = []
+
+[project.scripts]
+ber = "ber.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

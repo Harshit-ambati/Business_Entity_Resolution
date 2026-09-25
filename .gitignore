@@ -24,3 +24,6 @@ __pycache__/
 .ruff_cache/
 *.py[cod]
 .DS_Store
+*.egg-info/
+*.dist-info/
+dist/
