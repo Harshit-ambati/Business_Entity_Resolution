@@ -40,13 +40,13 @@ Choose thresholds by sweeping the **official macro F0.5**, including singletons,
 
 | Milestone | Deliverable | Exit evidence |
 | --- | --- | --- |
-| M0: contracts | Minimal package skeleton and agreed schemas/CLI | Small fixture passes through interfaces |
+| M0: contracts (Harshit's H0 PR) | Minimal package skeleton and agreed schemas/CLI | Small fixture passes through interfaces |
 | M1: baseline | Streaming ingest, one retrieval route, simple scorer, valid output | Full train holdout metric plus one format-valid test output |
 | M2: stronger retrieval | Multi-route candidates with bounded RAM | Recall/ceiling and runtime comparison against M1 |
 | M3: learned matcher | Model, hard negatives, threshold sweep | Reproducible macro F0.5, slice metrics, error cases |
 | M4: final | Best-known-good inference, both TSVs, docs, zip | Official validator PASS; fresh reproduction or recorded full-run evidence |
 
-M0 starts immediately. Aim to have M1 before pursuing optional features. Freeze a known-good commit and output early enough to permit a complete final inference run and package check before 27 September 23:59 IST.
+M0 starts immediately. The role-specific PR identifiers and acceptance checks are in the four assignment files; unresolved choices have named owners in `docs/DECISION-REGISTER.md`. Aim to have M1 before pursuing optional features. Freeze a known-good commit and output early enough to permit a complete final inference run and package check before 27 September 23:59 IST.
 
 ## Experiment policy
 
