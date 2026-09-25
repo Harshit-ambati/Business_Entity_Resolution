@@ -23,4 +23,6 @@ __pycache__/
 .pytest_cache/
 .ruff_cache/
 *.py[cod]
+*.egg-info/
+pytest-cache-files-*/
 .DS_Store

@@ -1,0 +1,5 @@
+entity_id	business_name	business_address	country
+S1-MULTI	Blue Lantern Bakery	12 River Road	United States
+S1-SINGLE	Quiet Birch Studio		India
+S1-FRANCE	Maison Étoile	7 Rue des Lilas	France
+S1-UNICODE	さくら商店	東京都千代田区	Japan

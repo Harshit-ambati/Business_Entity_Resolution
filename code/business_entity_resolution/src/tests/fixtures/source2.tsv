@@ -1,0 +1,4 @@
+entity_id	business_name	business_address	country
+S2-MATCH	Blue Lantern Bakery LLC	12 River Road	United States
+S2-HARD-NEGATIVE	Blue Lantern Bakery Supply	88 Hill Street	United States
+S2-UNICODE	さくら商店	東京都千代田区	Japan

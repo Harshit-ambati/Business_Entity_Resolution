@@ -4,7 +4,7 @@ This page separates **fixed contracts** from experimental choices. An owner prop
 
 | Decision | Owner | Resolve by | Current status | Evidence required |
 | --- | --- | --- | --- | --- |
-| Python package install/test command and CLI flags | Harshit | H0 | Open | Fresh clean-clone fixture run on 8 GB laptop |
+| Python package install/test command and CLI flags | Harshit | H0 | Selected in H0: from `code/business_entity_resolution`, `python -m pip install -r requirements.txt`, `python -m pip install -e .`, then `python -m pytest`; invoke `python -m ber.cli <index|train|evaluate|predict|validate> --data-root PATH --work-dir PATH --output-dir PATH` | Synthetic fixture tests and CLI flag/help checks on the 16 GB development laptop; fresh 8 GB clean-clone check remains for teammate review |
 | S1-level validation split rule and seed | Harshit | H0 | Selected in contracts: SHA-256 of `2026|S1_ID`, first 8 bytes mod 10 = 0 for validation | Implement/test exact rule; report counts by country/singleton |
 | `NormalizedRecord` representation/version | Thulasi with Harshit/Sabeena review | T2 | Selected baseline v1 in contracts; later changes need new version | Unicode and labeled-pair regression tests |
 | Index file format and record lookup strategy | Sabeena | S1 | Open | Build/load/lookup test, disk/RAM measurement |

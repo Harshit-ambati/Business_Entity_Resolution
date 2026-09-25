@@ -43,6 +43,8 @@ Decision(source1_entity_id: str, matched_entity_ids: tuple[str, ...])
 
 `CandidateGroup` contains one S1's **final candidates that will actually be scored**. Do not write early-stage candidates to `candidate_pairs.tsv` and then silently filter them later. A group may be empty. Candidate order is deterministic: descending retrieval priority/score with `candidate_entity_id` as the final tie break. `retrieval_routes` is a sorted unique tuple. All route scores are finite numbers with route-specific meaning documented by Sabeena; the matcher may ignore a route score until calibrated.
 
+The S1 ID belongs to `CandidateGroup.source1_entity_id`, not to each `Candidate`; this avoids two conflicting S1 IDs in one group. `Candidate.route_scores` may be omitted at construction and defaults to an empty read-only mapping when a retrieval route has no numeric score. Its field remains present on every candidate.
+
 `iter_candidates` emits groups in source1 input order. Harshit's pipeline may join each group with a second `read_source(source1_path, "S1-")` iterator by asserting equal S1 IDs at every step; a mismatch is an error, never a silent skip. Suresh's writer uses the same alignment rule. This allows streaming without requiring all S1 records in memory.
 
 ### Thulasi: `ber/data.py`, `ber/normalize.py`
