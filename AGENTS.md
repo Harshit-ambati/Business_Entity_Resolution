@@ -12,7 +12,7 @@ Harshit owns model/decision/integration/release; Sabeena owns candidate retrieva
 - Every test S1 ID needs exactly one output row. Match/candidate lists contain only valid S2/S3 IDs and no duplicates. Final matches are subsets of final candidates.
 - Treat country as open-set text; test includes France although training does not. Preserve Unicode and non-Latin scripts.
 - Compute per-S1 macro F0.5 including correct empty matches. Distinguish retrieval ceiling from scorer performance.
-- Keep data, generated indexes, model binaries, outputs, and secrets out of Git. Verify final model license and pinned versions.
+- The one canonical organizer archive, `data/student_resource.zip`, is tracked with Git LFS for team access. Keep extracted TSVs, generated indexes, model binaries, outputs, and secrets out of Git. Verify final model license and pinned versions.
 - The official output validator checks format, not model quality. Never claim a score without the corresponding measured run.
 
 ## PR evidence
