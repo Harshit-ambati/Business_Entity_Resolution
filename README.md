@@ -11,6 +11,18 @@ For every deduplicated Source 1 business, identify **all** records in Sources 2 
 
 The supplied data has 2,206,821 training Source 1 records and 1,732,544 test Source 1 records. Test retrieval searches 9,969,589 Source 2/3 records. Training has 7,638,365 labeled links; 123,247 Source 1 entities (5.6%) have no matches. France appears in test but not training. These counts were streamed from the provided archive; model quality has not yet been measured.
 
+## Get the challenge data
+
+The organizer-provided [student resource archive](data/student_resource.zip) is tracked with **Git LFS** because it is 1,094,823,222 bytes; the seven TSVs inside total 2,520,573,701 bytes. Install Git LFS before cloning or run `git lfs pull` in an existing clone. The tracked archive's SHA-256 is `2aefd2f8eb6f132b8933fccc1cbb98fa6356756a7581fed5914a5f26704a8bc5`.
+
+```powershell
+git lfs install
+git lfs pull
+python scripts/prepare_dataset.py
+```
+
+The helper extracts only the organizer's seven TSVs, validator, template, and README into ignored `student_resource/`. Use `student_resource/dataset` as the data root for the pipeline. It skips macOS metadata and never commits expanded files. See [data/README.md](data/README.md) for contents and integrity checks.
+
 ## Solution we will build
 
 ```text
@@ -49,7 +61,7 @@ docs/                     # ownership, contracts, verification
 output/                   # generated locally; not committed
 ```
 
-The large challenge dataset, generated indexes, models, and output TSVs stay out of Git. The final submission zip will contain the required code and output files. Do not upload business records to outside lookup services, geocoders, or entity-resolution APIs.
+Only the original archive is tracked with Git LFS. Extracted TSVs, generated indexes, models, and output TSVs stay out of Git. The final submission zip will contain the required code and output files. Do not send business records to outside lookup services, geocoders, or entity-resolution APIs.
 
 ## Immediate order of work
 

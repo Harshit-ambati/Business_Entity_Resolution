@@ -11,6 +11,7 @@ cache/
 *.joblib
 *.onnx
 *.zip
+!data/student_resource.zip
 
 # Local environments and secrets
 .env
