@@ -140,6 +140,10 @@ class TestEvaluate:
         assert r.macro_f0_5 == APPROX(1.0)
         assert r.true_empty_count == 1
         assert r.predicted_empty_count == 1
+        # true-empty entity correctly predicted empty -> singleton accuracy 1.0
+        assert r.singleton_total == 1
+        assert r.singleton_correct == 1
+        assert r.singleton_accuracy == APPROX(1.0)
 
     def test_case2_true_empty_pred_nonempty_score_0(self):
         truth = _truth(("S1-001", []))
@@ -149,20 +153,43 @@ class TestEvaluate:
         assert r.false_positive_count == 1
 
     def test_exact_singleton(self):
+        """S1 with one true link is NOT a contract singleton (no true links)."""
         truth = _truth(("S1-001", ["S2-001"]))
         preds = _preds(("S1-001", ["S2-001"]))
         r = evaluate(truth, preds)
         assert r.macro_f0_5 == APPROX(1.0)
-        assert r.singleton_correct == 1
-        assert r.singleton_total == 1
+        # Contract singleton = true_empty; this entity has 1 link -> not a singleton
+        assert r.singleton_total == 0
+        assert r.singleton_correct == 0
 
     def test_incorrect_singleton(self):
+        """S1 with one true link: wrong prediction; singleton counts unchanged."""
         truth = _truth(("S1-001", ["S2-001"]))
         preds = _preds(("S1-001", ["S2-002"]))
         r = evaluate(truth, preds)
         assert r.macro_f0_5 == APPROX(0.0)
+        # Contract singleton = true_empty; this entity has 1 link -> not a singleton
+        assert r.singleton_total == 0
         assert r.singleton_correct == 0
+
+    def test_singleton_accuracy_true_empty_pred_nonempty_is_zero(self):
+        """true_empty S1 predicted non-empty: singleton_correct=0, accuracy=0.0."""
+        truth = _truth(("S1-001", []))
+        preds = _preds(("S1-001", ["S2-001"]))
+        r = evaluate(truth, preds)
         assert r.singleton_total == 1
+        assert r.singleton_correct == 0
+        assert r.singleton_accuracy == APPROX(0.0)
+
+    def test_singleton_accuracy_nan_when_no_true_empty(self):
+        """When there are no true_empty entities, singleton_accuracy is NaN."""
+        truth = _truth(("S1-001", ["S2-001"]))
+        preds = _preds(("S1-001", ["S2-001"]))
+        r = evaluate(truth, preds)
+        assert r.singleton_total == 0
+        import math
+        assert math.isnan(r.singleton_accuracy)
+
 
     def test_multiple_true_all_predicted(self):
         truth = _truth(("S1-001", ["S2-001", "S3-002"]))

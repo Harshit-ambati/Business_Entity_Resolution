@@ -89,7 +89,13 @@ class EvaluationResult:
 
     @property
     def singleton_accuracy(self) -> float:
-        """Fraction of singleton-true S1 entities correctly predicted."""
+        """Fraction of true-empty S1 entities that were also predicted empty.
+
+        Contract definition: a *singleton* is an S1 with **no** true links
+        (i.e. the correct output is an empty match row).  singleton_accuracy
+        measures how often the model correctly produces an empty prediction for
+        these entities.
+        """
         if self.singleton_total == 0:
             return float("nan")
         return self.singleton_correct / self.singleton_total
@@ -322,9 +328,11 @@ def evaluate(
         fp_total += len(pred_ids - true_ids)
         fn_total += len(true_ids - pred_ids)
 
-        if len(true_ids) == 1:
+        # Contract: singleton = S1 with no true links (true_empty case).
+        # singleton_correct counts how many were also predicted empty.
+        if not true_ids:
             singleton_total += 1
-            if pred_ids == true_ids:
+            if not pred_ids:
                 singleton_correct += 1
 
         if country_labels:

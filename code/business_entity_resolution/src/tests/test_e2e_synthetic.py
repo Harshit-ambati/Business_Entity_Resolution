@@ -124,7 +124,9 @@ class TestEndToEndSynthetic:
         assert result.evaluated_s1_count == 5
         assert result.macro_f0_5 == pytest.approx(expected_macro, abs=1e-6)
         assert result.true_empty_count == 1  # S1-003
-        assert result.singleton_total == 3   # S1-001, S1-004, S1-005
+        # Contract singleton = true_empty. Only S1-003 qualifies (both pred empty -> correct).
+        assert result.singleton_total == 1
+        assert result.singleton_correct == 1
 
     def test_candidate_metrics(self):
         """Candidate retrieval diagnostics."""

@@ -85,8 +85,8 @@ class TestWriteOutputs:
     def test_empty_row_preserved(self, tmp_path):
         """S1 with no matches must have a row with empty second column."""
         test_s1 = ["S1-001"]
-        candidates = {}
-        decisions = {}
+        candidates = {"S1-001": []}  # explicit empty list required
+        decisions = {"S1-001": []}
         mpath, _ = write_outputs(test_s1, candidates, decisions, str(tmp_path))
         with open(mpath, encoding="utf-8") as f:
             lines = f.read().splitlines()
@@ -228,6 +228,27 @@ class TestWriteOutputs:
         assert not (tmp_path / "matching_results.tsv").exists()
         assert not (tmp_path / "candidate_pairs.tsv").exists()
 
+    def test_mapping_missing_candidate_entry_raises(self, tmp_path):
+        """S1 ID in test_s1 but absent from candidates dict must raise ValueError."""
+        test_s1 = ["S1-001", "S1-002"]
+        candidates = {"S1-001": ["S2-001"]}  # S1-002 is missing
+        decisions = {"S1-001": ["S2-001"], "S1-002": []}
+
+        with pytest.raises(ValueError, match=r"(?i)candidates mapping missing entry"):
+            write_outputs(test_s1, candidates, decisions, str(tmp_path))
+        assert not (tmp_path / "matching_results.tsv").exists()
+        assert not (tmp_path / "candidate_pairs.tsv").exists()
+
+    def test_mapping_missing_decision_entry_raises(self, tmp_path):
+        """S1 ID in test_s1 but absent from decisions dict must raise ValueError."""
+        test_s1 = ["S1-001", "S1-002"]
+        candidates = {"S1-001": ["S2-001"], "S1-002": ["S2-002"]}
+        decisions = {"S1-001": ["S2-001"]}  # S1-002 is missing
+
+        with pytest.raises(ValueError, match=r"(?i)decisions mapping missing entry"):
+            write_outputs(test_s1, candidates, decisions, str(tmp_path))
+        assert not (tmp_path / "matching_results.tsv").exists()
+        assert not (tmp_path / "candidate_pairs.tsv").exists()
 
 
 # ---------------------------------------------------------------------------

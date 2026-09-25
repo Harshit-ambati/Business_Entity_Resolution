@@ -267,7 +267,12 @@ def write_outputs(
             for s1_id in all_s1:
                 # Retrieve raw candidate list
                 if cand_map is not None:
-                    raw_cands = cand_map.get(s1_id, [])
+                    if s1_id not in cand_map:
+                        raise ValueError(
+                            f"write_outputs: candidates mapping missing entry for {s1_id!r}. "
+                            "Provide an explicit empty list [] if no candidates exist."
+                        )
+                    raw_cands = cand_map[s1_id]
                 else:
                     try:
                         cand_item = next(cand_iter)
@@ -283,7 +288,12 @@ def write_outputs(
 
                 # Retrieve raw decision list
                 if dec_map is not None:
-                    raw_preds = dec_map.get(s1_id, [])
+                    if s1_id not in dec_map:
+                        raise ValueError(
+                            f"write_outputs: decisions mapping missing entry for {s1_id!r}. "
+                            "Provide an explicit empty list [] if no decisions exist."
+                        )
+                    raw_preds = dec_map[s1_id]
                 else:
                     try:
                         dec_item = next(dec_iter)
