@@ -385,13 +385,30 @@ class TestEvaluateCandidates:
         r = evaluate_candidates(truth, cands, corpus_size=1000)
         assert r.reduction_ratio == APPROX(2 / (1 * 1000))
 
-    def test_s1_with_no_candidates_counted(self):
-        """S1 present in truth but absent from candidates still counts."""
+    def test_missing_candidate_group_raises(self):
+        """Missing candidate group for an S1 entity raises ValueError."""
+        # Harshit probe:
+        with pytest.raises(ValueError, match="Missing candidate groups"):
+            evaluate_candidates([("S1-A", {"S2-X"})], [])
+
         truth = _truth(
             ("S1-001", ["S2-001"]),
             ("S1-002", ["S2-002"]),
         )
-        cands = _cands(("S1-001", ["S2-001"]))  # S1-002 has no candidates
+        cands = _cands(("S1-001", ["S2-001"]))  # S1-002 omitted
+        with pytest.raises(ValueError, match="Missing candidate groups"):
+            evaluate_candidates(truth, cands)
+
+    def test_empty_candidate_group_valid_and_counted(self):
+        """Candidate group with explicit empty candidate list is valid and counted."""
+        truth = _truth(
+            ("S1-001", ["S2-001"]),
+            ("S1-002", ["S2-002"]),
+        )
+        cands = _cands(
+            ("S1-001", ["S2-001"]),
+            ("S1-002", []),  # explicitly empty
+        )
         r = evaluate_candidates(truth, cands)
         assert r.evaluated_s1_count == 2
         assert r.true_edge_recall == APPROX(0.5)

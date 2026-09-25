@@ -143,33 +143,38 @@ def _read_s1_ids_from_source(path: str) -> List[str]:
 
 def _read_output_tsv(
     path: str,
-) -> Tuple[List[str], Dict[str, List[str]], List[str]]:
+) -> Tuple[List[str], Dict[str, List[str]], List[str], List[Tuple[int, str]]]:
     """Read an output TSV (matching or candidate).
 
     Returns:
-        (ordered_s1_ids, s1_to_ids_list_map, raw_header_columns)
+        (ordered_s1_ids, s1_to_ids_list_map, raw_header_columns, malformed_rows)
     """
     ordered_ids: List[str] = []
     mapping: Dict[str, List[str]] = {}
+    malformed_rows: List[Tuple[int, str]] = []
     with open(path, encoding="utf-8", newline="") as fh:
         header_line = fh.readline()
-        header_cols = [c.strip().lower() for c in header_line.rstrip("\n").split("\t")]
-        for line in fh:
-            line = line.rstrip("\n")
-            if not line:
+        header_cols = [c.strip().lower() for c in header_line.rstrip("\r\n").split("\t")]
+        for line_num, line in enumerate(fh, start=2):
+            raw_line = line.rstrip("\r\n")
+            if not raw_line:
                 continue
-            parts = line.split("\t", 1)
+            parts = raw_line.split("\t")
+            if len(parts) != 2:
+                malformed_rows.append((line_num, raw_line))
+                continue
             s1_id = parts[0].strip()
             if not s1_id:
+                malformed_rows.append((line_num, raw_line))
                 continue
-            raw_ids = parts[1].strip() if len(parts) > 1 else ""
+            raw_ids = parts[1].strip()
             if raw_ids:
                 ids = [i.strip() for i in raw_ids.split(",")]
             else:
                 ids = []
             ordered_ids.append(s1_id)
             mapping[s1_id] = ids
-    return ordered_ids, mapping, header_cols
+    return ordered_ids, mapping, header_cols, malformed_rows
 
 
 # ---------------------------------------------------------------------------
@@ -223,6 +228,11 @@ def write_outputs(
         cand_map = {}
         for sid, cids in candidates.items():
             cand_map[sid] = list(cids)
+        extra_cands = set(cand_map.keys()) - set(all_s1)
+        if extra_cands:
+            raise ValueError(
+                f"write_outputs: extra candidate group for S1 IDs not in test_s1: {sorted(extra_cands)[:5]}"
+            )
     else:
         cand_iter = iter(candidates)
 
@@ -233,6 +243,11 @@ def write_outputs(
         dec_map = {}
         for sid, dids in decisions.items():
             dec_map[sid] = list(dids)
+        extra_decs = set(dec_map.keys()) - set(all_s1)
+        if extra_decs:
+            raise ValueError(
+                f"write_outputs: extra decision group for S1 IDs not in test_s1: {sorted(extra_decs)[:5]}"
+            )
     else:
         dec_iter = iter(decisions)
 
@@ -314,6 +329,31 @@ def write_outputs(
                 cf.write(f"{s1_id}\t{cand_str}\n")
                 mf.write(f"{s1_id}\t{pred_str}\n")
 
+            # Check for extra groups remaining in streams
+            if cand_iter is not None:
+                try:
+                    extra_cand = next(cand_iter)
+                    extra_sid = (
+                        extra_cand.source1_entity_id
+                        if hasattr(extra_cand, "source1_entity_id")
+                        else (extra_cand[0] if isinstance(extra_cand, tuple) else str(extra_cand))
+                    )
+                    raise ValueError(f"write_outputs: extra candidate group in stream after all test S1: {extra_sid}")
+                except StopIteration:
+                    pass
+
+            if dec_iter is not None:
+                try:
+                    extra_dec = next(dec_iter)
+                    extra_sid = (
+                        extra_dec.source1_entity_id
+                        if hasattr(extra_dec, "source1_entity_id")
+                        else (extra_dec[0] if isinstance(extra_dec, tuple) else str(extra_dec))
+                    )
+                    raise ValueError(f"write_outputs: extra decision group in stream after all test S1: {extra_sid}")
+                except StopIteration:
+                    pass
+
         # Atomically publish upon complete success
         os.replace(matching_tmp, matching_path)
         os.replace(candidate_tmp, candidate_path)
@@ -341,7 +381,7 @@ def validate_outputs(
     candidate_pairs_path: Optional[str] = None,
     valid_s2s3_ids: Optional[Set[str]] = None,
     country_labels: Optional[Dict[str, str]] = None,
-    require_candidates: bool = False,
+    require_candidates: bool = True,
 ) -> ValidationResult:
     """Preflight-validate output files before submission.
 
@@ -356,7 +396,7 @@ def validate_outputs(
                                existence checking (memory-heavy; load only
                                when --check-ids is desired).
         country_labels:        Optional {s1_id: country} for France coverage.
-        require_candidates:    If True, candidate_pairs_path is mandatory even if None.
+        require_candidates:    If True, candidate_pairs_path is mandatory (default True).
 
     Returns:
         ValidationResult with passed=True only if all blocking checks pass.
@@ -403,11 +443,18 @@ def validate_outputs(
         return result
 
     try:
-        m_ordered, m_mapping, m_header = _read_output_tsv(matching_results_path)
+        m_ordered, m_mapping, m_header, m_malformed = _read_output_tsv(matching_results_path)
     except UnicodeDecodeError as e:
         _add_error(None, "ENCODING_ERROR",
                    context=f"{matching_results_path}: {e}")
         return result
+
+    if m_malformed:
+        for line_num, line_str in m_malformed:
+            _add_error(
+                None, "MALFORMED_ROW",
+                context=f"matching_results.tsv line {line_num}: expected 2 tab-separated columns, got {len(line_str.split(chr(9)))}: {line_str!r}",
+            )
 
     # Check header
     expected_m_header = ["source1_entity_id", "matched_entity_ids"]
@@ -486,12 +533,11 @@ def validate_outputs(
 
     # ---- 4. Validate candidate_pairs.tsv (mandatory) ----
     c_mapping: Optional[Dict[str, List[str]]] = None
-    if candidate_pairs_path is None:
-        if require_candidates:
-            _add_error(
-                None, "MISSING_CANDIDATE_FILE",
-                context="candidate_pairs.tsv is mandatory for submission validation but was not provided",
-            )
+    if not candidate_pairs_path:
+        _add_error(
+            None, "MISSING_CANDIDATE_FILE",
+            context="candidate_pairs.tsv is mandatory for submission validation but was not provided",
+        )
     elif not os.path.isfile(candidate_pairs_path):
         _add_error(
             None, "MISSING_CANDIDATE_FILE",
@@ -499,13 +545,20 @@ def validate_outputs(
         )
     else:
         try:
-            c_ordered, c_mapping, c_header = _read_output_tsv(
+            c_ordered, c_mapping, c_header, c_malformed = _read_output_tsv(
                 candidate_pairs_path
             )
         except UnicodeDecodeError as e:
             _add_error(None, "ENCODING_ERROR",
                        context=f"{candidate_pairs_path}: {e}")
             c_mapping = None
+
+        if c_malformed:
+            for line_num, line_str in c_malformed:
+                _add_error(
+                    None, "MALFORMED_ROW",
+                    context=f"candidate_pairs.tsv line {line_num}: expected 2 tab-separated columns, got {len(line_str.split(chr(9)))}: {line_str!r}",
+                )
 
         if c_mapping is not None:
             expected_c_header = ["source1_entity_id", "candidate_entity_ids"]

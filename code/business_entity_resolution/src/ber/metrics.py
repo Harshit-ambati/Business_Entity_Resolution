@@ -510,13 +510,12 @@ def evaluate_candidates(
         oracle_pred = true_ids & cand_fz
         oracle_scores.append(_f0_5_score(true_ids, oracle_pred))
 
-    # S1s in truth with no candidates generated
-    for s1_id, true_ids in truth_index.items():
-        if s1_id not in seen_s1:
-            cand_counts.append(0)
-            oracle_scores.append(_f0_5_score(true_ids, frozenset()))
-            if true_ids:
-                matched_s1_total += 1
+    missing_in_cands = set(truth_index) - seen_s1
+    if missing_in_cands:
+        sample = sorted(missing_in_cands)[:5]
+        raise ValueError(
+            f"Missing candidate groups for {len(missing_in_cands)} truth S1 IDs (e.g. {sample})"
+        )
 
     oracle_macro = statistics.mean(oracle_scores) if oracle_scores else float("nan")
 

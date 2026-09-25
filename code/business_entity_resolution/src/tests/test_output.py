@@ -184,6 +184,51 @@ class TestWriteOutputs:
             content = f.read()
         assert "S1-\u4e2d\u6587" in content
 
+    def test_stream_extra_candidate_group_raises(self, tmp_path):
+        """Extra candidate group at the end of the candidate stream must raise ValueError."""
+        test_s1 = ["S1-001"]
+        cand_stream = (item for item in [("S1-001", ["S2-001"]), ("S1-EXTRA", ["S2-002"])])
+        dec_stream = (item for item in [("S1-001", ["S2-001"])])
+
+        with pytest.raises(ValueError, match=r"(?i)extra candidate group"):
+            write_outputs(test_s1, cand_stream, dec_stream, str(tmp_path))
+        assert not (tmp_path / "matching_results.tsv").exists()
+        assert not (tmp_path / "candidate_pairs.tsv").exists()
+
+    def test_stream_extra_decision_group_raises(self, tmp_path):
+        """Extra decision group at the end of the decision stream must raise ValueError."""
+        test_s1 = ["S1-001"]
+        cand_stream = (item for item in [("S1-001", ["S2-001"])])
+        dec_stream = (item for item in [("S1-001", ["S2-001"]), ("S1-EXTRA", ["S2-001"])])
+
+        with pytest.raises(ValueError, match=r"(?i)extra decision group"):
+            write_outputs(test_s1, cand_stream, dec_stream, str(tmp_path))
+        assert not (tmp_path / "matching_results.tsv").exists()
+        assert not (tmp_path / "candidate_pairs.tsv").exists()
+
+    def test_mapping_extra_candidate_key_raises(self, tmp_path):
+        """Extra S1 ID in candidates dict not in test_s1 must raise ValueError."""
+        test_s1 = ["S1-001"]
+        candidates = {"S1-001": ["S2-001"], "S1-EXTRA": ["S2-002"]}
+        decisions = {"S1-001": ["S2-001"]}
+
+        with pytest.raises(ValueError, match=r"(?i)extra candidate group"):
+            write_outputs(test_s1, candidates, decisions, str(tmp_path))
+        assert not (tmp_path / "matching_results.tsv").exists()
+        assert not (tmp_path / "candidate_pairs.tsv").exists()
+
+    def test_mapping_extra_decision_key_raises(self, tmp_path):
+        """Extra S1 ID in decisions dict not in test_s1 must raise ValueError."""
+        test_s1 = ["S1-001"]
+        candidates = {"S1-001": ["S2-001"]}
+        decisions = {"S1-001": ["S2-001"], "S1-EXTRA": ["S2-001"]}
+
+        with pytest.raises(ValueError, match=r"(?i)extra decision group"):
+            write_outputs(test_s1, candidates, decisions, str(tmp_path))
+        assert not (tmp_path / "matching_results.tsv").exists()
+        assert not (tmp_path / "candidate_pairs.tsv").exists()
+
+
 
 # ---------------------------------------------------------------------------
 # validate_outputs() tests
@@ -210,11 +255,13 @@ class TestValidateOutputs:
     def test_missing_s1_row_detected(self, tmp_path):
         s1_path = str(tmp_path / "test_source1.tsv")
         m_path = str(tmp_path / "matching_results.tsv")
+        c_path = str(tmp_path / "candidate_pairs.tsv")
 
         _write_source1(s1_path, ["S1-001", "S1-002"])
         _write_matching(m_path, [("S1-001", "S2-001")])  # S1-002 missing
+        _write_candidates(c_path, [("S1-001", "S2-001"), ("S1-002", "")])
 
-        result = validate_outputs(s1_path, m_path)
+        result = validate_outputs(s1_path, m_path, c_path)
         assert not result.passed
         problem_types = [e.problem_type for e in result.errors]
         assert "MISSING_S1_ROWS" in problem_types
@@ -222,11 +269,13 @@ class TestValidateOutputs:
     def test_extra_s1_row_detected(self, tmp_path):
         s1_path = str(tmp_path / "test_source1.tsv")
         m_path = str(tmp_path / "matching_results.tsv")
+        c_path = str(tmp_path / "candidate_pairs.tsv")
 
         _write_source1(s1_path, ["S1-001"])
         _write_matching(m_path, [("S1-001", "S2-001"), ("S1-999", "")])  # S1-999 extra
+        _write_candidates(c_path, [("S1-001", "S2-001")])
 
-        result = validate_outputs(s1_path, m_path)
+        result = validate_outputs(s1_path, m_path, c_path)
         assert not result.passed
         problem_types = [e.problem_type for e in result.errors]
         assert "EXTRA_S1_ROWS" in problem_types
@@ -234,14 +283,16 @@ class TestValidateOutputs:
     def test_wrong_header_detected(self, tmp_path):
         s1_path = str(tmp_path / "test_source1.tsv")
         m_path = str(tmp_path / "matching_results.tsv")
+        c_path = str(tmp_path / "candidate_pairs.tsv")
 
         _write_source1(s1_path, ["S1-001"])
         _write_tsv(str(m_path), [
             "entity_id\tresults",  # wrong header
             "S1-001\tS2-001",
         ])
+        _write_candidates(c_path, [("S1-001", "S2-001")])
 
-        result = validate_outputs(s1_path, m_path)
+        result = validate_outputs(s1_path, m_path, c_path)
         assert not result.passed
         problem_types = [e.problem_type for e in result.errors]
         assert "WRONG_HEADER" in problem_types
@@ -264,11 +315,13 @@ class TestValidateOutputs:
         """Empty match row is valid."""
         s1_path = str(tmp_path / "test_source1.tsv")
         m_path = str(tmp_path / "matching_results.tsv")
+        c_path = str(tmp_path / "candidate_pairs.tsv")
 
         _write_source1(s1_path, ["S1-001"])
         _write_matching(m_path, [("S1-001", "")])
+        _write_candidates(c_path, [("S1-001", "")])
 
-        result = validate_outputs(s1_path, m_path)
+        result = validate_outputs(s1_path, m_path, c_path)
         assert result.passed
         assert result.empty_matching_rows == 1
 
@@ -276,11 +329,13 @@ class TestValidateOutputs:
         """IDs without S2-/S3- prefix fail validation."""
         s1_path = str(tmp_path / "test_source1.tsv")
         m_path = str(tmp_path / "matching_results.tsv")
+        c_path = str(tmp_path / "candidate_pairs.tsv")
 
         _write_source1(s1_path, ["S1-001"])
         _write_matching(m_path, [("S1-001", "S1-BAD")])
+        _write_candidates(c_path, [("S1-001", "S1-BAD")])
 
-        result = validate_outputs(s1_path, m_path)
+        result = validate_outputs(s1_path, m_path, c_path)
         assert not result.passed
         problem_types = [e.problem_type for e in result.errors]
         assert "INVALID_ID_PREFIX" in problem_types
@@ -288,12 +343,14 @@ class TestValidateOutputs:
     def test_france_coverage_in_result(self, tmp_path):
         s1_path = str(tmp_path / "test_source1.tsv")
         m_path = str(tmp_path / "matching_results.tsv")
+        c_path = str(tmp_path / "candidate_pairs.tsv")
 
         _write_source1(s1_path, ["S1-001", "S1-002"])
         _write_matching(m_path, [("S1-001", ""), ("S1-002", "")])
+        _write_candidates(c_path, [("S1-001", ""), ("S1-002", "")])
 
         country_labels = {"S1-001": "France", "S1-002": "India"}
-        result = validate_outputs(s1_path, m_path, country_labels=country_labels)
+        result = validate_outputs(s1_path, m_path, c_path, country_labels=country_labels)
         assert result.passed
         assert result.france_total == 1
         assert result.france_in_output == 1
@@ -328,19 +385,15 @@ class TestValidateOutputs:
         assert not result.passed
         assert any(e.problem_type == "MISSING_CANDIDATE_FILE" for e in result.errors)
 
-    def test_candidate_mandatory_when_require_candidates_true(self, tmp_path):
-        """When require_candidates=True, omitting candidate_pairs_path must fail."""
+    def test_candidate_mandatory_by_default(self, tmp_path):
+        """Omitting candidate_pairs_path must fail preflight validation by default."""
         s1_path = str(tmp_path / "test_source1.tsv")
         m_path = str(tmp_path / "matching_results.tsv")
 
         _write_source1(s1_path, ["S1-001"])
         _write_matching(m_path, [("S1-001", "")])
 
-        result = validate_outputs(
-            s1_path, m_path,
-            candidate_pairs_path=None,
-            require_candidates=True,
-        )
+        result = validate_outputs(s1_path, m_path)
         assert not result.passed
         assert any(e.problem_type == "MISSING_CANDIDATE_FILE" for e in result.errors)
 
@@ -364,6 +417,7 @@ class TestValidateOutputs:
         separator; TSV field separator is TAB."""
         s1_path = str(tmp_path / "test_source1.tsv")
         m_path = str(tmp_path / "matching_results.tsv")
+        c_path = str(tmp_path / "candidate_pairs.tsv")
 
         _write_source1(s1_path, ["S1-001"])
         # Second column contains comma-separated IDs (valid TSV)
@@ -371,6 +425,30 @@ class TestValidateOutputs:
             "source1_entity_id\tmatched_entity_ids",
             "S1-001\tS2-001,S3-002",
         ])
+        _write_tsv(str(c_path), [
+            "source1_entity_id\tcandidate_entity_ids",
+            "S1-001\tS2-001,S3-002",
+        ])
 
-        result = validate_outputs(s1_path, m_path)
+        result = validate_outputs(s1_path, m_path, c_path)
         assert result.passed, result.summary()
+
+    def test_malformed_one_column_row_detected(self, tmp_path):
+        """A row missing a tab separator (single column) is malformed and must fail validation."""
+        s1_path = str(tmp_path / "test_source1.tsv")
+        m_path = str(tmp_path / "matching_results.tsv")
+        c_path = str(tmp_path / "candidate_pairs.tsv")
+
+        _write_source1(s1_path, ["S1-001"])
+        # Missing \t separator - single column only
+        _write_tsv(str(m_path), [
+            "source1_entity_id\tmatched_entity_ids",
+            "S1-001",
+        ])
+        _write_candidates(c_path, [("S1-001", "")])
+
+        result = validate_outputs(s1_path, m_path, c_path)
+        assert not result.passed
+        problem_types = [e.problem_type for e in result.errors]
+        assert "MALFORMED_ROW" in problem_types
+
