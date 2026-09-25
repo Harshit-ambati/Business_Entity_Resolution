@@ -6,6 +6,16 @@
 
 Deliver a reproducible program that learns from training labels, scores Sabeena's final candidates, selects zero or multiple links per S1, reports Suresh's exact macro F0.5 on a fixed holdout, and produces the official test outputs. You decide which *measured* model/config becomes the final submission. Own the complete final zip, methodology, and portal upload log. This is the most complex workstream; do not shift full model training or final release decisions to the 8 GB owners.
 
+## First implementation recipe (a baseline, not a final-model claim)
+
+1. In H0, create importable shared types, one synthetic S1 with two valid S2/S3 matches, one hard negative, one singleton, and one `France` S1. Make the CLI accept `--data-root`, `--work-dir`, and `--output-dir`; all three paths are explicit, and no command depends on Harshit's local Downloads path.
+2. Implement the exact S1-ID SHA-256 split in [CONTRACTS.md](CONTRACTS.md) before model tuning. Put the split function and a test in H0. Log train/holdout counts, country counts, and singleton counts. Do not move difficult validation entities back into training after seeing their errors.
+3. In H1, build a small first training run from a documented subset of training S1 IDs, then scale only after the full feature/score/save/load path works. The initial feature vector should include normalized-name exact agreement, name token overlap, name character similarity, address token overlap, address character similarity, number agreement/conflict, missing-address flags, S2/S3 indicator, and retrieval route flags. State exactly how each is computed and what value it takes when missing.
+4. Train a simple rule score and one MIT/Apache-compliant classifier (a pinned MIT LightGBM version is an acceptable first candidate). For each training S1, retain retrieved labeled positives and sample plausible nonmatches from its highest-ranked retrieved candidates with a fixed seed. Record positive/negative counts and do not call unreviewed test pairs negatives.
+5. Begin with a documented score threshold, then sweep thresholds against Suresh's **macro per-S1 F0.5** on the untouched holdout. Keep the rule baseline until the trained model beats it on the same queries. Make a full test prediction only after a complete validated run, not after a good tiny-sample score.
+
+This recipe fixes a path to a working baseline. Model size, feature additions, sampling ratio, and final threshold remain measured decisions in [DECISION-REGISTER.md](DECISION-REGISTER.md); a teammate should not silently invent their own version.
+
 ## Files and boundaries
 
 | File | You deliver |
@@ -51,6 +61,15 @@ You may update root planning files via PR. Do not implement another owner's modu
 ## Decisions you must record rather than assume
 
 Choose and document the candidate cap with Sabeena, model family and license, negative sampling policy, feature set, threshold policy, batch sizes, training/validation split, and final experiment selection. Each selection needs the same-holdout comparison, measured runtime, and a reason. If a contract field is missing, change [CONTRACTS.md](CONTRACTS.md) in a reviewed PR before teammates rely on it.
+
+## Failure behavior and definition of done
+
+- If index normalization version differs from the model manifest, fail before scoring. If a candidate record cannot be loaded, fail with its ID; do not skip the pair and silently reduce recall.
+- If model feature order differs from the saved manifest, fail. If a batch cannot complete, checkpoint the last fully written S1 and resume without duplicate rows; never call a partial output final.
+- If a full run exceeds the laptop's measured RAM/disk budget, shrink batches or use disk-backed intermediates and rerun the same holdout comparison. Do not claim a score from the incomplete run.
+- **Required:** H0-H3, one complete scored holdout, valid full test outputs, reproducible code/docs/zip, license check, portal log.
+- **Recommended after required work:** targeted feature/threshold improvements driven by false merges, missed links, and singleton errors.
+- **Optional only if time and evidence permit:** embeddings, cross-source graph consistency, or a larger text model. None may displace a known-good final submission.
 
 ## Handoff and review behavior
 

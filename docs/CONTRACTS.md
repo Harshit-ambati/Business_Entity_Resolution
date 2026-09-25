@@ -57,6 +57,8 @@ Readers yield input order and close files. `normalize_record` is pure and determ
 
 `expected_prefix` is exactly one of `"S1-"`, `"S2-"`, or `"S3-"` (including the dash). The caller supplies it from the file's role; the reader validates every yielded ID.
 
+Normalization v1 is fixed for the initial PR: NFKC then `casefold`, replace `&` with the token `and`, turn other punctuation/separators into spaces while preserving Unicode letters/digits, collapse whitespace, and tokenize in order. Country uses NFKC/case folding/whitespace collapse only. Retain raw fields, digits, accents, and non-Latin scripts. Do not expand abbreviations, remove legal suffixes, or transliterate in v1. Export `NORMALIZATION_VERSION = "1"`; a changed output requires a new version and index/model rebuild. Thulasi may propose measured variants in a later PR.
+
 ### Sabeena: `ber/index.py`, `ber/blocking.py`
 
 ```python
@@ -66,7 +68,7 @@ iter_candidates(source1_path, index_store, config) -> Iterator[CandidateGroup]
 index_store.get_record(candidate_entity_id) -> NormalizedRecord
 ```
 
-`IndexManifest` stores paths, source checksums/sizes, normalization version, route configuration, and index version. `IndexStore` may use disk-backed storage; it must not require all raw records as Python objects. `iter_candidates` emits exactly one group per input S1 in input order, with only valid S2/S3 IDs from that split's source files. Training validation builds/queries an index from **training S2/S3**; test inference builds/queries a separate index from **test S2/S3**. No truth labels are inputs to candidate generation. A candidate cap is a named config value chosen through validation, never an undocumented constant.
+`IndexManifest` stores paths, source checksums/sizes, normalization version, route configuration, and index version. `IndexStore` may use disk-backed storage; it must not require all raw records as Python objects. `iter_candidates` emits exactly one group per input S1 in input order, with only valid S2/S3 IDs from that split's source files. Training validation builds/queries an index from **training S2/S3**; test inference builds/queries a separate index from **test S2/S3**. No truth labels are inputs to candidate generation. `max_candidates_per_s1 = 32` is the **temporary baseline**, applied after route union; Sabeena compares 16/32/64 on the same holdout before Harshit freezes the final cap. The selected cap is always a named, logged config value.
 
 ### Harshit: `ber/features.py`, `ber/model.py`, `ber/decision.py`, `ber/cli.py`
 
@@ -102,8 +104,8 @@ Both are UTF-8 TSV with one row for **every** test S1 ID, including France and e
 
 For each S1, let `T` be its true set and `P` its predicted set. If both are empty, score 1. If exactly one is empty, score 0. Otherwise compute precision and recall and `F0.5 = 1.25*Prc*Rec/(0.25*Prc+Rec)`. Average over **all** held-out S1 rows. Do not substitute pair-level, micro, or globally pooled F0.5. The blocking oracle predicts `T intersect C` from final candidate set `C` and must score at least as well as any model whose outputs are subsets of `C`.
 
-Harshit fixes and records an S1-level train/validation split seed in M0. Validation labels are not available to model fitting, feature selection, or retrieval tuning except through explicitly recorded holdout experiments. S2/S3 records can be indexed as unlabeled retrieval corpus for their respective split; test labels do not exist. A `France` test accuracy is unknowable locally.
+The M0 split is fixed: compute `sha256(("2026|" + source1_entity_id).encode("utf-8"))`, interpret the first eight digest bytes as an unsigned big-endian integer, and assign the S1 row to validation when that integer modulo 10 equals 0; all other S1 rows are for model fitting. This gives a reproducible approximately 10% S1-level holdout. Harshit records resulting counts by country and singleton status and tests the split function. Validation labels are not available to model fitting; validation experiments and threshold selection are recorded explicitly and compared on the same fixed holdout. S2/S3 records can be indexed as unlabeled retrieval corpus for their respective split; test labels do not exist. A `France` test accuracy is unknowable locally.
 
 ## 6. Change control and unresolved choices
 
-The contracts above are fixed now. The following choices remain experimental rather than implied defaults: retrieval routes and candidate cap, address parser rules, model type, negative sampling ratio, threshold policy, batch sizes, and cache/index format. Each owner proposes these in their PR with measurements; Harshit records the accepted config. If a teammate needs a new field or behavior, they update this file and request affected-owner review before coding against it. When the organizer's materials are ambiguous, quote the exact conflict in the PR and select the interpretation that satisfies both where possible.
+The contracts above and temporary starting values are fixed now. The following **final** choices remain experimental: enabled retrieval routes and candidate cap, address parser rules, model type, negative sampling ratio, threshold policy, batch sizes, and cache/index format. Each owner proposes these in their PR with measurements; Harshit records the accepted config. If a teammate needs a new field or behavior, they update this file and request affected-owner review before coding against it. When the organizer's materials are ambiguous, quote the exact conflict in the PR and select the interpretation that satisfies both where possible.

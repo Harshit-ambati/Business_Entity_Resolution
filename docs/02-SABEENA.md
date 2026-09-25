@@ -6,6 +6,17 @@
 
 Given an S1 file plus the S2/S3 files from the *same split*, retrieve a bounded, deduplicated, deterministic set of plausible S2/S3 IDs for **every** S1 row. Your final `CandidateGroup` is exactly the set Harshit's model scores and Suresh's `candidate_pairs.tsv` writer emits. Optimize true-link recall and oracle macro F0.5 under measured time/RAM limits; a high pairwise model score cannot recover a true pair you never retrieved.
 
+## First implementation recipe (run routes in this order)
+
+1. Build a **split-specific** index of normalized S2/S3 records. Store ID-to-record lookup on disk or in a measured compact format. Partition by whatever country labels appear in that split, including `France` in test; do not create a US/India enum. Confirm with labeled training data before making country equality a strict filter.
+2. Route A: exact normalized business-name lookup within the country partition. Return all hits up to a documented per-route limit, with deterministic ID tie breaks.
+3. Route B: lookup rare normalized name tokens, excluding high-frequency tokens using a documented frequency cutoff. Common words such as `services` must not create unbounded posting lists.
+4. Route C: independent address retrieval using a conjunction of informative address tokens and, where present, number/locality evidence. It must be able to retrieve a synthetic cross-script-name pair whose address still agrees. Never require an address when the record has none.
+5. Route D: add fuzzy name retrieval using character grams or another measured compact text index, restricted to manageable partitions/posting lists. Do **not** compute a dense S1 x S2/S3 similarity matrix.
+6. Union route results, attach all contributing route names/scores, deduplicate by candidate ID, rank deterministically, and then apply the **temporary baseline cap of 32 candidates per S1**. Benchmark 16, 32, and 64 on the same holdout before choosing the final cap with Harshit. An S1 with no hits still emits an empty `CandidateGroup`.
+
+The routes above are an implementation order, not a claim that each improves the score. If a route adds negligible recall but large cost, show the comparison and omit it from the selected final config. The candidate file must reflect the post-cap group, not all raw route hits.
+
 ## Files and output
 
 | File/artifact | You deliver |
@@ -46,3 +57,12 @@ No exhaustive all-pairs comparison, single-route-only final design, external ent
 ## Handoff packet for Harshit and Suresh
 
 Each PR provides: exact command, commit/config, input split, index manifest/version, output schema example, route definitions and score meanings, candidate cap, counts and metrics, runtime/peak RAM/disk, and at least five representative misses with the *reason the retrieval route failed*. Share only small synthetic examples in Git; full challenge records and generated indexes stay ignored. Request a contract PR before adding a field Harshit's model or Suresh's writer must consume.
+
+## Failure behavior and definition of done
+
+- Refuse to open an index whose source split, input fingerprint, normalization version, or index version mismatches the query run. Rebuild it; do not silently reuse stale postings.
+- If an indexed candidate ID cannot be looked up or has an impossible source prefix, fail with the ID and route; do not drop it from the list and overstate recall.
+- If a common-key posting list exceeds its safe bound, skip or narrow **that route** under a documented policy, count how many queries were affected, and measure the resulting recall loss. Do not let one key exhaust 16 GB RAM.
+- **Required:** S1-S3, final candidate groups for every S1, full-holdout recall/ceiling/cost report, reproducible train and test indexes.
+- **Recommended after required work:** route-specific improvements for measured cross-script, abbreviation, and missing-address misses.
+- **Optional only if time and evidence permit:** ANN embeddings or graph expansion. They must improve the same holdout without breaking the 16 GB full run.

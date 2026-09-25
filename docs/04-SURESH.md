@@ -6,6 +6,14 @@
 
 Make every model comparison trustworthy and make invalid submissions impossible to overlook. You implement the challenge's per-S1 macro F0.5, blocking diagnostics, clear error reports, and deterministic writing/checking of both TSVs. Harshit owns choosing the final model, assembling the zip, and uploading; you provide the release gate and evidence.
 
+## First implementation recipe (do not wait for a trained model)
+
+1. Make a tiny synthetic truth/decision fixture with four S1 cases: correct singleton, false singleton merge, partial multi-match, and perfect multi-match. Compute expected scores by hand in test comments. Implement the pure per-S1 scorer, then macro averaging over every truth S1.
+2. Add candidate fixtures in which a positive is absent from blocking, present but rejected by the model, and a false positive is emitted. Verify the four error categories and the oracle score before reading the real dataset.
+3. Build a writer from three **aligned** iterators: test S1 rows, Sabeena's final candidate groups, and Harshit's decisions. For each row, check all three S1 IDs agree, IDs are unique and belong to valid test S2/S3 sources, and matches are a subset of candidates. Write empty second cells rather than omitting rows.
+4. Write outputs to temporary files in the target directory, flush/close them, run your preflight, and only then replace the named final files. Keep the previous known-good outputs until Harshit confirms the new run's official validator result. If Windows file replacement or a partial run fails, leave the old final files intact.
+5. Run the organizer validator on the exact files Harshit will package/upload; record its exit code and output checksum. A preflight or fixture `PASS` is not a full-test `PASS`.
+
 ## Files and output
 
 | File/artifact | You deliver |
@@ -47,3 +55,12 @@ Do not implement retrieval routes or train the classifier. Do not silently repai
 ## Release handoff to Harshit
 
 Provide the exact evaluator and writer commands, report schema, failing-row error format, organizer-validator command/result, and final output checksums. Supply methodology numbers: macro F0.5, singleton accuracy, candidate recall/ceiling, candidate volume, and representative error categories. Say whether full output validation was actually run; a format-valid sample is not proof the 1.73 million-row file is valid. Keep a known-good checksum and do not overwrite it before Harshit records the portal upload.
+
+## Failure behavior and definition of done
+
+- Reject missing, duplicate, or unexpected S1 IDs in evaluation. Never turn a missing prediction into an empty prediction: that would inflate singleton performance.
+- Reject malformed candidate/prediction rows with the S1 ID and reason. Do not silently deduplicate or drop invalid target IDs in the writer.
+- If a run stops halfway, the temporary file is incomplete and must not be called final. Resume from a checked boundary or restart; validate the complete output again.
+- **Required:** R1-R3 exact metric, blocking oracle, writer/preflight, plus a full organizer validator `PASS` on final outputs.
+- **Recommended after required work:** R4 error report and dataset-free CI, followed by slice diagnostics that directly guide the next retrieval/model PR.
+- **Optional only if time and evidence permit:** visual plots or richer report formatting. Neither substitutes for the exact metric or release checks.

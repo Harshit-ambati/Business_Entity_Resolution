@@ -6,6 +6,16 @@
 
 Make the organizer's TSV files readable and comparable without dropping records or destroying information. Give all teammates the same deterministic `Record`, `TruthRow`, and `NormalizedRecord` behavior. The 8 GB laptop is sufficient because your readers and audits stream; no task requires holding millions of Python record objects in memory.
 
+## First implementation recipe (normalization v1)
+
+1. Open files as UTF-8, parse **tabs** with a CSV/TSV reader, and require the expected header. Do not split lines on commas: both addresses and ID lists use commas. Yield source rows in file order and include file/row number in exceptions.
+2. For each name/address, keep the raw field unchanged. Create a comparison view by applying Unicode NFKC and `casefold()`, replacing `&` with the word `and`, replacing punctuation/separators with spaces while keeping Unicode letters and digits, and collapsing repeated whitespace. Generate ordered tokens from that view. Empty address gives `""` and an empty token tuple.
+3. Normalize country with NFKC, case folding, and whitespace collapse only. Do not map an unknown label to `US`, `India`, or an error. `France` and any future label remain valid distinct keys.
+4. Do not expand abbreviations in v1: `st` can mean `street` or `saint`, so an untested rewrite is risky. If T3 evidence supports a tiny **address-only** map, propose each mapping with positive and counterexample fixtures and increment the normalization version. Do not apply address expansions to a business name. Do not remove legal suffixes from `name_norm`, transliterate scripts, or strip digits in v1.
+5. Export `NORMALIZATION_VERSION = "1"`; change the version whenever the normalized output can change. Sabeena's index and Harshit's model manifests must reject a mismatched version.
+
+This is the required starting behavior. A more aggressive alternate view is a new named field and reviewed contract change, backed by measured retrieval/score impact; it never replaces the raw fields silently.
+
 ## Files and output
 
 | File/artifact | You deliver |
@@ -27,7 +37,7 @@ Do not write the retrieval index, train a model, or generate final outputs. No e
 
 ## PR T2: normalization with retained evidence
 
-**Input:** `Record`. **Deliverable:** pure `normalize_record(record)` returning raw record, normalized strings, ordered tokens, open-set `country_key`, and a `NORMALIZATION_VERSION` constant. Start with Unicode NFKC, case folding, whitespace/punctuation normalization, and a small documented set of generic abbreviations. Keep name and address separate. Preserve digits, informative tokens, accents/non-Latin evidence, and original raw text. Do not transliterate scripts or remove legal suffixes destructively unless held-out data shows a benefit; if an alternate canonical view is wanted, request a new contract field rather than overwriting the raw view.
+**Input:** `Record`. **Deliverable:** pure `normalize_record(record)` returning raw record, normalized strings, ordered tokens, open-set `country_key`, and a `NORMALIZATION_VERSION` constant. Implement the exact v1 sequence above with **no abbreviation rewrites**. Keep name and address separate. Preserve digits, informative tokens, accents/non-Latin evidence, and original raw text. Do not transliterate scripts or remove legal suffixes destructively; if an alternate canonical view is wanted, request a new contract field rather than overwriting the raw view.
 
 **Acceptance:** exact input gives the same normalized output across runs; no `US`/`India` allowlist exists; `France` and an arbitrary fourth country yield valid keys; empty address yields empty normalized address/tokens. Synthetic fixtures cover ampersand versus `and`, punctuation, `Ltd`/`Limited`, `Rd`/`Road`, reordered tokens, accents, Devanagari, Telugu, mixed scripts, and house numbers. Tests assert important tokens survive normalization rather than only comparing to the implementation's own output.
 
@@ -44,3 +54,12 @@ Give Sabeena and Harshit one synthetic `NormalizedRecord` example and the export
 ## Review evidence and limits
 
 Each PR includes exact test command/output and a bounded memory check, plus a list of remaining data anomalies. Use challenge records locally for profiling but commit only synthetic fixtures and aggregate counts. You are not responsible for a full 10 million-record retrieval or model score; those depend on Sabeena and Harshit respectively. When an aggressive normalization improves some pairs and harms others, report both outcomes so the team can compare held-out retrieval and F0.5 before merging it.
+
+## Failure behavior and definition of done
+
+- A wrong header, malformed column count, invalid UTF-8, wrong source prefix, or duplicate truth-list ID raises a diagnostic error with path and row number. Do not silently replace bad bytes or skip a record.
+- If the optional full duplicate-ID audit cannot fit in RAM, switch to a disk-backed index or external sort; report the method and whether the check completed. A partial audit is labeled partial.
+- If a normalization rule changes a sample's meaning or deletes a non-Latin/number token, keep the old view and report the counterexample in the PR. Do not merge a destructive change based only on a handful of positive examples.
+- **Required:** T1-T3 readers, v1 normalization, deterministic fixtures, full streamed count/quality report, version handoff.
+- **Recommended after required work:** carefully measured generic abbreviation improvements and a bounded labeled-pair normalization analysis.
+- **Optional only if time and evidence permit:** transliteration or language-specific address parsing. No external business-identity data may be introduced.

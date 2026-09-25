@@ -5,10 +5,10 @@ This page separates **fixed contracts** from experimental choices. An owner prop
 | Decision | Owner | Resolve by | Current status | Evidence required |
 | --- | --- | --- | --- | --- |
 | Python package install/test command and CLI flags | Harshit | H0 | Open | Fresh clean-clone fixture run on 8 GB laptop |
-| S1-level validation split rule and seed | Harshit | H0 | Open | Reproducible split with no label leakage; counts by country/singleton |
-| `NormalizedRecord` representation/version | Thulasi with Harshit/Sabeena review | T2 | Schema fixed; rule details open | Unicode and labeled-pair regression tests |
+| S1-level validation split rule and seed | Harshit | H0 | Selected in contracts: SHA-256 of `2026|S1_ID`, first 8 bytes mod 10 = 0 for validation | Implement/test exact rule; report counts by country/singleton |
+| `NormalizedRecord` representation/version | Thulasi with Harshit/Sabeena review | T2 | Selected baseline v1 in contracts; later changes need new version | Unicode and labeled-pair regression tests |
 | Index file format and record lookup strategy | Sabeena | S1 | Open | Build/load/lookup test, disk/RAM measurement |
-| Retrieval routes and candidate cap | Sabeena with Harshit review | S2/S3 | Open | Same-holdout recall, oracle F0.5, candidate volume, runtime |
+| Retrieval routes and candidate cap | Sabeena with Harshit review | S2/S3 | Temporary route order and cap 32 in Sabeena brief; final config open | Compare caps 16/32/64 on same holdout; recall, oracle F0.5, volume, runtime |
 | Exact pair-feature list/order | Harshit | H1 | Open | Manifest, train/test parity test, ablation or error evidence |
 | Model family, exact version, license | Harshit | H1/H3 | Open | Held-out score, resource use, license record |
 | Hard-negative sampling policy | Harshit | H1 | Open | Reproducible sampled counts and validation comparison |
