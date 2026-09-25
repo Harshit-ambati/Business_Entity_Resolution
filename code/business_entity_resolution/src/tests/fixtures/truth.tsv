@@ -1,0 +1,5 @@
+source1_entity_id	matched_entity_ids
+S1-MULTI	S2-MATCH,S3-MATCH
+S1-SINGLE	
+S1-FRANCE	S3-FRANCE
+S1-UNICODE	S2-UNICODE

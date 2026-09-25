@@ -1,0 +1,2 @@
+# H0 runtime uses only the Python standard library. Pytest is needed for H0 tests.
+pytest==9.1.1

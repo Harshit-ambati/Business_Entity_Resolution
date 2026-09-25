@@ -1,70 +1,74 @@
-# Business Entity Resolution — Code Package
+# Business Entity Resolution package — H0
 
-**ML Challenge 2026** | Team: Harshit, Sabeena, Thulasi, Suresh
+This package currently supplies shared in-memory contracts, the fixed Source 1 validation split, a small synthetic fixture, and a command-line surface. It has not run a model or generated competition outputs.
 
-## Setup
+## Layout and setup
 
-```bash
+All Python source, including tests, is under `src/`. `src/ber/contracts.py` defines shared records and candidate/decision types; `src/ber/split.py` defines the holdout; `src/ber/cli.py` names the pipeline stages. Python 3.10 or newer is required. From this package directory, in a normal Python environment:
+
+`src/tests/` is the single test directory specified by `docs/CONTRACTS.md`; later workstreams should add tests there.
+`CandidateGroup` carries the S1 ID for its candidates. `Candidate.route_scores` may be omitted when a route has no numeric score; the field then contains an empty read-only mapping.
+
+```powershell
+python -m pip install -r requirements.txt
+python -m pip install -e .
+python -m pytest -q
+```
+
+The editable install makes `import ber` and `python -m ber.cli` work from any working directory in that environment. H0 has no runtime dependency outside Python's standard library; the pinned requirement installs pytest for tests. The fixtures in `src/tests/fixtures/` use invented businesses and run without the challenge data. They cover two true links for one S1, a similar-name hard negative, a singleton, France, Japanese text, and an empty address. The tests do not claim training or evaluation quality.
+
+## Challenge data and paths
+
+From the repository root, install Git LFS, pull the tracked archive, and extract it:
+
+```powershell
+git lfs install
 git lfs pull
-python scripts/prepare_dataset.py  # extract student_resource/
-
-pip install -e code/business_entity_resolution
+python scripts/prepare_dataset.py
 ```
 
-## Module Ownership
+The resulting default **example** data root is `student_resource/dataset`; any equivalent directory can be passed through `--data-root`. The archive and extraction details are in the repository's `data/README.md`. Extracted TSVs and generated artifacts are ignored by Git. `artifacts/` is the proposed ignored work directory on this machine; the selected path can differ on another machine.
 
-| Module | Owner | Status |
-|--------|-------|--------|
-| `ber/data.py`, `ber/normalize.py` | Thulasi | Planned |
-| `ber/blocking.py`, `ber/index.py` | Sabeena | Planned |
-| `ber/features.py`, `ber/model.py`, `ber/decision.py` | Harshit | Planned |
-| `ber/metrics.py` | **Suresh** | **Implemented** |
-| `ber/output.py` | **Suresh** | **Implemented** |
-| `ber/cli.py` | Harshit (integration) + Suresh (eval commands) | **Partial** |
+## CLI contract
 
-## Running Tests
+Each subcommand takes all three explicit path flags **after** the command name:
 
-```bash
-python -m pytest code/business_entity_resolution/tests/ -v
-# Expected: 74 passed, ~1s
+```powershell
+python -m ber.cli index --data-root student_resource/dataset --work-dir artifacts --output-dir output
+python -m ber.cli train --data-root student_resource/dataset --work-dir artifacts --output-dir output
+python -m ber.cli evaluate --data-root student_resource/dataset --work-dir artifacts --output-dir output
+python -m ber.cli predict --data-root student_resource/dataset --work-dir artifacts --output-dir output
+python -m ber.cli validate --data-root student_resource/dataset --work-dir artifacts --output-dir output
 ```
 
-## Suresh CLI Commands
+`python -m ber.cli --help` and per-command `--help` describe this interface. At H0, each stage accepts the flags, prints `Not implemented in H0`, and exits with status 3. Missing required flags exit nonzero with an argparse error. No stage creates artifacts or claims success yet.
 
-```bash
-# Evaluate macro F0.5
-ber evaluate --truth <truth.tsv> --predictions <matching_results.tsv>
+**Candidate retrieval, model training, threshold tuning, evaluation, full inference, and official output generation are not implemented in H0.** Thulasi owns TSV ingestion/normalization, Sabeena owns indexing/blocking, and Suresh owns metrics/output. Later Harshit PRs will add features, model, decisions, and orchestration against their reviewed interfaces.
 
-# Candidate diagnostics
-ber candidates --truth <truth.tsv> --candidates <candidate_pairs.tsv>
+## Suresh Workstream — Metrics & Output
 
-# Preflight + organizer validator
-ber validate \
-    --test-s1 student_resource/dataset/test/test_source1.tsv \
-    --matching output/matching_results.tsv \
-    --candidates output/candidate_pairs.tsv \
-    --run-organizer
+Suresh implements `ber.metrics` and `ber.output` according to `docs/CONTRACTS.md` and `docs/04-SURESH.md`:
+- Official Macro $F_{0.5}$ evaluation with empty match handling and edge-level recall (`ber.metrics.evaluate`).
+- Candidate retrieval diagnostics and oracle ceiling calculation (`ber.metrics.evaluate_candidates`).
+- Prediction error analysis breakdown (`ber.metrics.error_analysis`).
+- Output TSV generation preserving exact $S_1$ order, strict ID validation, and atomic writes (`ber.output.write_outputs`).
+- Preflight validator enforcing submission formatting, candidate file requirements, and ID integrity (`ber.output.validate_outputs`).
+- Organizer validator runner wrapper (`ber.output.run_organizer_validator`).
 
-# Error analysis
-ber error-analysis --truth <truth.tsv> \
-    --predictions <matching_results.tsv> \
-    --candidates <candidate_pairs.tsv> --verbose
+Full evaluation documentation and verification results are in [docs/SURESH-EVALUATION.md](../../docs/SURESH-EVALUATION.md).
+
+## Fixed validation partition
+
+Call `ber.is_validation_s1(source1_entity_id)`. It rejects non-S1 IDs. It computes `sha256(("2026|" + source1_entity_id).encode("utf-8"))`, interprets the **first eight digest bytes** as an unsigned big-endian integer, and returns `True` if the value modulo 10 equals 0. This is an approximately 10% S1-level holdout, deterministic and independent of file order. It uses no Python process hash and stores no ID list. Training/holdout country and singleton counts require Thulasi's streaming readers and are not measured in H0.
+
+## Machine resource check
+
+Run these from the repository root on Windows before a full run. The disk command measures the volume containing the proposed relative `artifacts/` work directory; substitute the actual work directory if it is on another volume.
+
+```powershell
+Get-CimInstance Win32_Processor | Select-Object -First 1 Name,NumberOfLogicalProcessors
+Get-CimInstance Win32_OperatingSystem | Select-Object FreePhysicalMemory,TotalVisibleMemorySize
+python -c "import shutil; from pathlib import Path; p=Path('artifacts'); u=shutil.disk_usage(p.parent); print(f'work_dir={p} free_bytes={u.free} total_bytes={u.total}')"
 ```
 
-## Organizer Validator (direct)
-
-Run from `student_resource/`:
-```bash
-python utils/validate_submission.py \
-    --matching output/matching_results.tsv \
-    --candidate output/candidate_pairs.tsv \
-    --test-dir dataset/test
-```
-
-Exit code 0 = format/coverage/consistency PASS. Does NOT measure ML quality.
-
-## See Also
-
-- [docs/SURESH-EVALUATION.md](../../docs/SURESH-EVALUATION.md) — Full evaluation docs
-- [docs/CONTRACTS.md](../../docs/CONTRACTS.md) — Interface contracts
-- [docs/VERIFICATION.md](../../docs/VERIFICATION.md) — Acceptance criteria
+The RAM values above are reported by Windows in KiB; divide by 1,048,576 for GiB. Snapshot on 25 September 2026 for the intended 16 GB full-run laptop: AMD Ryzen 5 7520U, 8 logical processors, 16,023,164 KiB visible RAM (15.28 GiB), 2,943,640 KiB free RAM (2.81 GiB), and 98,870,026,240 free disk bytes (92.08 GiB) on the `artifacts/` volume. Free RAM and disk change over time; this snapshot is not a full-pipeline capacity benchmark.
