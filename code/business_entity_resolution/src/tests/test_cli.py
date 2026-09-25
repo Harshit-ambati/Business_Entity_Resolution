@@ -44,7 +44,10 @@ def test_stage_flags_and_clear_unimplemented_status(tmp_path, command):
     data, work, output = (tmp_path / part for part in ("data", "work", "output"))
     result = _run(command, "--data-root", str(data), "--work-dir", str(work), "--output-dir", str(output))
     assert result.returncode != 0
-    assert f"{command}: Not implemented in H0" in result.stderr
+    if command == "train":
+        assert "H1 pair model API is ready" in result.stderr
+    else:
+        assert f"{command}: Not implemented in H0" in result.stderr
     assert not work.exists() and not output.exists()
 
 
