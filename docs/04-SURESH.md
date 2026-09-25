@@ -1,38 +1,66 @@
-# Suresh | evaluation, diagnostics, output correctness
+# Suresh: exact evaluation, diagnostics, submission correctness
 
-**Machine:** 8 GB RAM. **Workstream:** exact competition metric, error reporting, output writer, and final validation support. **Starting branch:** `feat/evaluation-output`.
+**Machine:** 8 GB RAM. **Starting branch:** `feat/evaluation-output`. **Primary reviewer:** Harshit. **Contract reviewers:** Thulasi for truth/source parsing; Sabeena for final candidate semantics. **Authoritative shared interface:** [CONTRACTS.md](CONTRACTS.md).
 
-## Mission
+## Outcome you own
 
-Make every improvement measurable and every submission format-safe. Your tools should stream or batch data so a full report can run on 8 GB, while small synthetic tests prove the special cases in the challenge metric.
+Make every model comparison trustworthy and make invalid submissions impossible to overlook. You implement the challenge's per-S1 macro F0.5, blocking diagnostics, clear error reports, and deterministic writing/checking of both TSVs. Harshit owns choosing the final model, assembling the zip, and uploading; you provide the release gate and evidence.
 
-## Owned files
+## First implementation recipe (do not wait for a trained model)
 
-- `code/business_entity_resolution/src/ber/metrics.py`: per-S1 macro F0.5, candidate recall/ceiling, slice reports.
-- `code/business_entity_resolution/src/ber/output.py`: deterministic final TSV writer and preflight checks.
-- Tests for scoring, candidate subset, duplicates, missing IDs, singleton rows, country coverage, and output headers.
-- Small error-analysis report and final validation checklist; CI test workflow after package/test commands exist.
+1. Make a tiny synthetic truth/decision fixture with four S1 cases: correct singleton, false singleton merge, partial multi-match, and perfect multi-match. Compute expected scores by hand in test comments. Implement the pure per-S1 scorer, then macro averaging over every truth S1.
+2. Add candidate fixtures in which a positive is absent from blocking, present but rejected by the model, and a false positive is emitted. Verify the four error categories and the oracle score before reading the real dataset.
+3. Build a writer from three **aligned** iterators: test S1 rows, Sabeena's final candidate groups, and Harshit's decisions. For each row, check all three S1 IDs agree, IDs are unique and belong to valid test S2/S3 sources, and matches are a subset of candidates. Write empty second cells rather than omitting rows.
+4. Write outputs to temporary files in the target directory, flush/close them, run your preflight, and only then replace the named final files. Keep the previous known-good outputs until Harshit confirms the new run's official validator result. If Windows file replacement or a partial run fails, leave the old final files intact.
+5. Run the organizer validator on the exact files Harshit will package/upload; record its exit code and output checksum. A preflight or fixture `PASS` is not a full-test `PASS`.
 
-## PR milestones
+## Files and output
 
-1. **Evaluator:** implement the exact per-entity F0.5 formula and special empty/empty case. Compare against hand-calculated fixtures including no match, multiple matches, false merges, and missed links. Report macro score across all S1 rows, not just matched rows.
-2. **Candidate diagnostics:** compute true-edge recall, complete-match coverage per S1, oracle macro ceiling, reduction ratio, candidate count distribution, and S2/S3 slices. Distinguish misses caused by retrieval from misses caused by model decisions.
-3. **Output/release:** write exact headers and exactly one row per test S1, including empty lists and every French S1. Verify IDs exist, lists have no duplicates, final matches are subsets of candidates, and output is UTF-8 TSV. Run the organizer validator on both files and record `PASS`.
-4. **Error report:** produce compact false-positive, false-negative, and singleton examples with scores/features for Harshit and Sabeena to investigate. Provide numbers and representative cases for the methodology template.
+| File/artifact | You deliver |
+| --- | --- |
+| `code/business_entity_resolution/src/ber/metrics.py` | `evaluate`, `evaluate_candidates`, score/slice reports |
+| `code/business_entity_resolution/src/ber/output.py` | `write_outputs`, ID/subset/order checks, output manifest/checksums |
+| `code/business_entity_resolution/src/tests/test_metrics.py` | Hand-calculated metric and candidate-ceiling cases |
+| `code/business_entity_resolution/src/tests/test_output.py` | Exact headers, empty rows, duplicates, invalid IDs, France coverage |
+| `code/business_entity_resolution/src/ber/` report helper | Reproducible false-positive/false-negative/singleton summaries |
+| `.github/workflows/pr-checks.yml` | Fast fixture tests once M0 test command exists; no dataset/secrets required |
+| `artifacts/evaluation/` (ignored) | Holdout score and error reports; final preflight evidence |
 
-## Performance rules
+Do not implement retrieval routes or train the classifier. Do not silently repair invalid output in the evaluator: expose a clear error so the owner fixes the source. Full metric/output checks should use streaming, sorted joins, or disk-backed state rather than retaining all pair scores on an 8 GB laptop.
 
-- Use a small fixture for development. For full runs, read sorted/partitioned inputs or batches rather than holding all pair features/predictions in memory.
-- Metrics use labeled US/India train holdout. France in test has coverage and output checks only; never assign it a validation accuracy.
-- Avoid using portal score as a replacement for local tests. The official validator checks formatting, not prediction quality.
+## PR R1: score exactly what organizers score
 
-## Acceptance and handoff
+**Input:** truth rows and one decision per S1. **Deliverable:** `evaluate` from [CONTRACTS.md](CONTRACTS.md), including a per-S1 F0.5 function and aggregate report. For nonempty truth `T` and prediction `P`, precision is `|T∩P|/|P|`, recall is `|T∩P|/|T|`, and F0.5 is `1.25*precision*recall/(0.25*precision+recall)`. Empty/empty scores 1; exactly one empty scores 0. Average over **all** S1 rows. Reject missing/duplicate/unexpected S1 rows and duplicate predicted IDs; otherwise singleton mistakes may be hidden.
 
-- Tests demonstrate correct macro score for true-empty/pred-empty = 1, true-empty/pred-nonempty = 0, and the problem statement's multi-link example.
-- Candidate oracle score is always at least the score of a correctly evaluated model restricted to those candidates; investigate any violation.
-- A sample output and later a full test output pass both your preflight checks and `utils/validate_submission.py`.
-- Harshit receives exact evaluation commands, report schema, error cases, output checksum procedure, and final-package checklist.
+**Acceptance:** hand-calculated tests include one true singleton predicted empty, one true singleton falsely linked, one matched S1 predicted empty, a perfect multi-link case, and the organizer's 2-of-3 example (approximately 0.714). A three-S1 fixture verifies macro averaging differs from pooled pair-level F0.5. Reports include total S1 count, macro F0.5, singleton count/accuracy, and optional US/India slices. France has no labeled test truth and must never be reported as a measured accuracy.
 
-## Review partners
+## PR R2: blocking ceiling and error attribution
 
-Harshit reviews evaluator/output PRs; Thulasi checks source and truth parsing assumptions; Sabeena checks blocking metrics and candidate-file semantics.
+**Input:** truth rows and Sabeena's **final** `CandidateGroup` for each held-out S1. **Deliverable:** `evaluate_candidates` with true-edge recall; recall separately for S2/S3; fraction of matched S1 with every true link present; number/mean/p50/p95/p99/max candidates per S1; reduction ratio against all possible S1 x (S2+S3) pairs; and oracle macro F0.5 from `truth ∩ candidates`. Include all true singleton rows in the oracle average. A diagnostic report separates (a) true IDs absent from candidates, (b) true IDs retrieved but rejected by Harshit's decision, (c) false emitted IDs, and (d) wrongly nonempty singleton rows.
+
+**Acceptance:** synthetic fixtures prove each category. Every final matched ID must appear in the corresponding final candidate group. Oracle macro F0.5 is at least the actual score for any decisions restricted to those groups; a violation means a bug in joining/scoring and fails CI. Route contribution reports, if requested, use Sabeena's route names without inventing new definitions.
+
+## PR R3: exact output writer and preflight
+
+**Input:** input-order test S1 iterator, aligned final candidate groups, aligned decisions, and valid test S2/S3 IDs. **Deliverable:** `write_outputs` produces `output/matching_results.tsv` and `output/candidate_pairs.tsv` with the exact two headers in the problem statement, UTF-8, single tab separator, one row per S1, empty second cell for zero IDs, comma-separated IDs without quoting or duplicates. Preserve test S1 input order. Check valid ID prefixes and membership in the **test** S2/S3 files, not training files. Ensure final matches are subsets of that S1's exact scored candidate set. Write a manifest with row count, empty count, per-country S1 coverage, output byte size, and SHA-256 checksums.
+
+**Acceptance:** fixture writer and preflight reject missing/duplicate S1, wrong source ID, ID absent from test sources, duplicate list ID, match absent from candidates, extra columns, and unexpected header. They preserve an S1 row with no candidates and an S1 row with candidates but no final matches. The official organizer `utils/validate_submission.py` prints `PASS` on fixture outputs using fixture test data and later on full outputs. Final full checks expect exactly 1,732,544 S1 rows, including all 259,452 French S1 rows in the supplied archive.
+
+## PR R4: report helper and fast CI
+
+**Input:** predictions, candidate groups, truth, scores/features, and M0 test command. **Deliverable:** bounded error samples with IDs, score, route, key feature values, and failure category; an aggregate comparison table matching [VERIFICATION.md](VERIFICATION.md); and a GitHub Action that runs fixture tests without downloading challenge data or requiring secrets. When records are included in a local error report, keep that report ignored; do not post full challenge rows in GitHub PRs.
+
+**Acceptance:** the action passes on a clean clone with only repository files. A full holdout report can be generated within 8 GB using bounded state or disk-backed joins. Report score and candidate numbers with split, commit, configuration, and denominators. Do not label a sample or fixture score as full holdout.
+
+## Release handoff to Harshit
+
+Provide the exact evaluator and writer commands, report schema, failing-row error format, organizer-validator command/result, and final output checksums. Supply methodology numbers: macro F0.5, singleton accuracy, candidate recall/ceiling, candidate volume, and representative error categories. Say whether full output validation was actually run; a format-valid sample is not proof the 1.73 million-row file is valid. Keep a known-good checksum and do not overwrite it before Harshit records the portal upload.
+
+## Failure behavior and definition of done
+
+- Reject missing, duplicate, or unexpected S1 IDs in evaluation. Never turn a missing prediction into an empty prediction: that would inflate singleton performance.
+- Reject malformed candidate/prediction rows with the S1 ID and reason. Do not silently deduplicate or drop invalid target IDs in the writer.
+- If a run stops halfway, the temporary file is incomplete and must not be called final. Resume from a checked boundary or restart; validate the complete output again.
+- **Required:** R1-R3 exact metric, blocking oracle, writer/preflight, plus a full organizer validator `PASS` on final outputs.
+- **Recommended after required work:** R4 error report and dataset-free CI, followed by slice diagnostics that directly guide the next retrieval/model PR.
+- **Optional only if time and evidence permit:** visual plots or richer report formatting. Neither substitutes for the exact metric or release checks.

@@ -1,47 +1,111 @@
-# Shared contracts (freeze in M0)
+# Implementation contracts for the four workstreams
 
-This document defines the interfaces teammates implement against. Proposed module names become binding after the M0 contract PR is reviewed. A change to an interface requires a contract PR or an explicitly reviewed change in the same PR before another workstream depends on it.
+**Status:** normative planning contract. Harshit's first implementation PR (M0) must create these importable types/functions or amend this document with approval from every affected owner. No teammate should silently substitute a different API, file layout, output schema, or scoring definition. The organizer's materials override this document for competition rules.
 
-## Inputs
+## 1. Repository and runtime boundaries
 
-All input files are UTF-8 TSV, read with `delimiter="\t"`. Source files have exactly these logical columns: `entity_id`, `business_name`, `business_address`, `country`. Ground truth has `source1_entity_id`, `matched_entity_ids`, where the latter is an empty string or comma-separated S2/S3 IDs. Empty address is valid; no country is assumed to be in a closed list. IDs are opaque strings: prefixes identify source, while numeric portions have no predictive meaning.
+- Python package root: `code/business_entity_resolution/src/ber/`. Imports use `ber.*` after installing the local package or setting `PYTHONPATH` as documented by M0.
+- Tests: `code/business_entity_resolution/src/tests/`. Tiny synthetic fixtures may be committed there; challenge source rows must not be committed. Keeping tests under `src/` honors the final package's all-source-under-`src/` rule.
+- Scripts used to reproduce the solution must be inside `code/business_entity_resolution/`; all source code shipped in the final zip goes under its `src/` directory.
+- Original organizer `dataset/train/` and `dataset/test/` are supplied at runtime. Code must accept a data-root path, not require a developer's absolute Windows path.
+- Working indexes, model files, intermediate pair tables, reports, and final outputs go under a configurable ignored work/output directory. They are never committed.
+- The default execution target is a CPU laptop with 16 GB RAM for index/model/full inference and 8 GB RAM for data and evaluation development. No CUDA, cloud service, or external data service is assumed.
 
-Suggested package: `code/business_entity_resolution/src/ber/`.
+## 2. Input schema and identity rules
 
-## Record and normalization interface (Thulasi)
+Read UTF-8 TSV with an explicit tab delimiter. Source headers are exactly `entity_id`, `business_name`, `business_address`, `country`; truth headers are exactly `source1_entity_id`, `matched_entity_ids`. Treat IDs as opaque strings except for validating `S1-`, `S2-`, `S3-` prefixes. Never use the numeric suffix as a model feature. `matched_entity_ids` is a comma-separated list inside the second TSV cell; an empty cell means zero matches. Empty address is valid. Preserve input S1 order in generated files. Country is an open-set string; `France` must work without adding a new code branch.
 
-`Record`: `entity_id: str`, `business_name: str`, `business_address: str`, `country: str`. A source reader yields records in stable input order and accepts a TSV path; it does not load the complete file into memory.
+Data validation must reject a bad header, malformed row, wrong source prefix, duplicate entity ID within a source file, duplicate truth S1 ID, or duplicate ID within one truth list. Missing names/country, if encountered, must be reported and handled explicitly rather than silently dropping the S1 row. Because a global duplicate-ID set may exceed 8 GB, the implementation may use sorting or disk-backed checks for full-size validation.
 
-`normalize(record) -> NormalizedRecord` retains the original record and exposes `name_norm`, `address_norm`, `name_tokens`, `address_tokens`, `country_key`, and extracted optional address components. Missing components use an explicit empty/null representation. Normalization must be deterministic and Unicode-safe, with a version string saved alongside trained artifacts. `country_key` derives from the supplied label without a hard-coded US/India whitelist.
+## 3. Shared Python types and functions
 
-Ownership: `data.py`, `normalize.py`, their tests, and a data-quality summary command or function. Feature additions can request new fields through a contract change.
+M0 creates `ber/contracts.py` with immutable or effectively immutable types equivalent to the following. Field names and meaning are fixed; concrete dataclass details are Harshit's implementation choice in M0.
 
-## Candidate interface (Sabeena)
+```python
+Record(entity_id: str, business_name: str, business_address: str, country: str)
+TruthRow(source1_entity_id: str, matched_entity_ids: tuple[str, ...])
+NormalizedRecord(
+    raw: Record,
+    name_norm: str,
+    address_norm: str,
+    name_tokens: tuple[str, ...],
+    address_tokens: tuple[str, ...],
+    country_key: str,
+)
+Candidate(
+    candidate_entity_id: str,
+    retrieval_routes: tuple[str, ...],
+    route_scores: dict[str, float],
+)
+CandidateGroup(source1_entity_id: str, candidates: tuple[Candidate, ...])
+Decision(source1_entity_id: str, matched_entity_ids: tuple[str, ...])
+```
 
-`build_index(source2, source3, work_dir, config)` prepares only the provided corpus. `iter_candidates(source1, index, config)` yields each S1 ID with a deduplicated, bounded ordered list of `Candidate` records. Each candidate has `source1_entity_id`, `candidate_entity_id`, `retrieval_routes`, and optional route scores/ranks. IDs must exist in the respective input corpus. Output order and tie breaks are deterministic.
+`CandidateGroup` contains one S1's **final candidates that will actually be scored**. Do not write early-stage candidates to `candidate_pairs.tsv` and then silently filter them later. A group may be empty. Candidate order is deterministic: descending retrieval priority/score with `candidate_entity_id` as the final tie break. `retrieval_routes` is a sorted unique tuple. All route scores are finite numbers with route-specific meaning documented by Sabeena; the matcher may ignore a route score until calibrated.
 
-The candidate set passed to the model must be the set written to `candidate_pairs.tsv`; any cheap prefilter before inference happens *before* the file is produced. An empty list is valid. Blocking records its configuration, version, pair count, and resource measurements.
+`iter_candidates` emits groups in source1 input order. Harshit's pipeline may join each group with a second `read_source(source1_path, "S1-")` iterator by asserting equal S1 IDs at every step; a mismatch is an error, never a silent skip. Suresh's writer uses the same alignment rule. This allows streaming without requiring all S1 records in memory.
 
-Ownership: `blocking.py`, `index.py` or equivalent, retrieval tests, and benchmark notes. Index file format is internal but must be reproducible from TSV inputs and bounded for 16 GB RAM.
+### Thulasi: `ber/data.py`, `ber/normalize.py`
 
-## Feature/model/decision interface (Harshit)
+```python
+read_source(path, expected_prefix) -> Iterator[Record]
+read_truth(path) -> Iterator[TruthRow]
+normalize_record(record: Record) -> NormalizedRecord
+```
 
-`features(source1_record, candidate_record, retrieval_metadata) -> fixed-order numeric feature vector`. Features must be defined identically for train and test, including missing-value behavior. `train(...)` saves model plus feature order and versions. `score(candidate_pairs) -> pair scores`. `decide(scores, config) -> zero-or-more matched IDs per S1`. A shared evaluator chooses thresholds on validation labels using macro F0.5. The scorer may return an empty list and may retain multiple IDs from either source.
+Readers yield input order and close files. `normalize_record` is pure and deterministic. It preserves the raw record and never translates or deletes entire non-Latin scripts. `country_key` is normalized from the supplied country string without an allowlist. Tokens are ordered and deterministic; empty address produces empty address features. The normalization version is an exported constant and is recorded in model/index manifests. Any extra normalized fields require a reviewed contract change.
 
-Ownership: `features.py`, `model.py`, `decision.py`, `cli.py`, end-to-end orchestration, model licensing review, and release selection. IDs are keys, not predictors.
+`expected_prefix` is exactly one of `"S1-"`, `"S2-"`, or `"S3-"` (including the dash). The caller supplies it from the file's role; the reader validates every yielded ID.
 
-## Evaluation/output interface (Suresh)
+Normalization v1 is fixed for the initial PR: NFKC then `casefold`, replace `&` with the token `and`, turn other punctuation/separators into spaces while preserving Unicode letters/digits, collapse whitespace, and tokenize in order. Country uses NFKC/case folding/whitespace collapse only. Retain raw fields, digits, accents, and non-Latin scripts. Do not expand abbreviations, remove legal suffixes, or transliterate in v1. Export `NORMALIZATION_VERSION = "1"`; a changed output requires a new version and index/model rebuild. Thulasi may propose measured variants in a later PR.
 
-`evaluate(truth, predictions)` returns macro F0.5 and diagnostic counts, treating true-empty/predicted-empty as 1 and true-empty/predicted-nonempty as 0. It reports precision, recall, singleton accuracy, per-source and per-country slices where ground truth exists. `evaluate_candidates(truth, candidates)` returns true-edge recall, complete-S1 recall, candidate counts, reduction ratio, and oracle macro F0.5 ceiling.
+### Sabeena: `ber/index.py`, `ber/blocking.py`
 
-`write_outputs(test_s1, candidates, decisions, output_dir)` writes two UTF-8 TSVs with exact headers and one row per test S1 ID, including empty rows. `matching_results.tsv` has `source1_entity_id<TAB>matched_entity_ids`; `candidate_pairs.tsv` has `source1_entity_id<TAB>candidate_entity_ids`. ID lists are comma-separated without duplicates. Final matches are subsets of candidates. It invokes or documents the organizer's `utils/validate_submission.py` as the release gate.
+```python
+build_index(source2_path, source3_path, work_dir, config) -> IndexManifest
+open_index(manifest) -> IndexStore
+iter_candidates(source1_path, index_store, config) -> Iterator[CandidateGroup]
+index_store.get_record(candidate_entity_id) -> NormalizedRecord
+```
 
-Ownership: `metrics.py`, `output.py`, tests, error-reporting tools, and submission checks. Suresh may prepare documentation evidence; Harshit owns the final artifact and portal submission.
+`IndexManifest` stores paths, source checksums/sizes, normalization version, route configuration, and index version. `IndexStore` may use disk-backed storage; it must not require all raw records as Python objects. `iter_candidates` emits exactly one group per input S1 in input order, with only valid S2/S3 IDs from that split's source files. Training validation builds/queries an index from **training S2/S3**; test inference builds/queries a separate index from **test S2/S3**. No truth labels are inputs to candidate generation. `max_candidates_per_s1 = 32` is the **temporary baseline**, applied after route union; Sabeena compares 16/32/64 on the same holdout before Harshit freezes the final cap. The selected cap is always a named, logged config value.
 
-## Command-line entry points (Harshit integrates)
+### Harshit: `ber/features.py`, `ber/model.py`, `ber/decision.py`, `ber/cli.py`
 
-The M0 PR will settle exact flags and paths. Required capabilities: prepare/index, train, evaluate, predict, and validate outputs from the original TSV folder. All commands must log seed, config, version/commit, elapsed time, and output path. A README in `code/business_entity_resolution/` must show the exact commands for a fresh end-to-end reproduction.
+```python
+pair_features(s1: NormalizedRecord, candidate: NormalizedRecord,
+              retrieval: Candidate) -> fixed-order numeric vector
+train_model(training_pairs, validation_pairs, config) -> ModelManifest
+score_group(s1, group, index_store, model_manifest) -> pair scores in candidate order
+decide_group(source1_entity_id, candidates, pair_scores, config) -> Decision
+```
 
-## Tests and changes
+The model manifest contains feature names/order, normalization/index versions, training config/seed, model type/license/version, and artifact path. Scores correspond one-to-one with the group's candidates. `decide_group` may return zero or multiple S2/S3 IDs; it cannot add an ID absent from the candidate group. Thresholds are selected on the fixed validation split using Suresh's evaluator. Exact CLI flags are frozen in M0 and documented in the package README; required commands are `index`, `train`, `evaluate`, `predict`, and `validate`.
 
-Each owner supplies small fixtures covering exact match, reordered or abbreviated name, cross-script name with address evidence, changed/missing address, hard negative, singleton, unseen `France` label, and multiple matches. Do not use real business records as external lookup queries. Keep test fixtures tiny and synthetic. Interface changes list affected owners in the PR and require their review before merge.
+### Suresh: `ber/metrics.py`, `ber/output.py`
+
+```python
+evaluate(truth_rows, decision_rows, s1_country_lookup=None) -> MetricsReport
+evaluate_candidates(truth_rows, candidate_groups) -> CandidateReport
+write_outputs(test_s1_rows, candidate_groups, decision_rows, output_dir) -> OutputManifest
+```
+
+Evaluation joins by S1 ID, includes **all** truth S1 IDs, and rejects duplicate/missing/unexpected IDs. It must not silently treat a missing prediction row as a correct singleton. Candidate reports include edge recall, matched-S1 complete-link coverage, candidate count distribution, reduction ratio, and oracle macro F0.5. The writer consumes aligned S1/candidate/decision streams or a bounded disk-backed equivalent; it validates every ID and subset relation, writes in test S1 input order, and records file checksums/row counts. It does not need to retain the full test output in RAM.
+
+## 4. Exact output files
+
+`output/matching_results.tsv` header: `source1_entity_id<TAB>matched_entity_ids`.
+
+`output/candidate_pairs.tsv` header: `source1_entity_id<TAB>candidate_entity_ids`.
+
+Both are UTF-8 TSV with one row for **every** test S1 ID, including France and empty lists. Each second cell is zero or more comma-separated IDs with no duplicates and no embedded quotes. All listed IDs exist in the corresponding test S2/S3 files. Final matches are a subset of the final candidate list for that S1. The organizer's `utils/validate_submission.py` must print `PASS` for release; it does not establish ML quality.
+
+## 5. Metric and split contract
+
+For each S1, let `T` be its true set and `P` its predicted set. If both are empty, score 1. If exactly one is empty, score 0. Otherwise compute precision and recall and `F0.5 = 1.25*Prc*Rec/(0.25*Prc+Rec)`. Average over **all** held-out S1 rows. Do not substitute pair-level, micro, or globally pooled F0.5. The blocking oracle predicts `T intersect C` from final candidate set `C` and must score at least as well as any model whose outputs are subsets of `C`.
+
+The M0 split is fixed: compute `sha256(("2026|" + source1_entity_id).encode("utf-8"))`, interpret the first eight digest bytes as an unsigned big-endian integer, and assign the S1 row to validation when that integer modulo 10 equals 0; all other S1 rows are for model fitting. This gives a reproducible approximately 10% S1-level holdout. Harshit records resulting counts by country and singleton status and tests the split function. Validation labels are not available to model fitting; validation experiments and threshold selection are recorded explicitly and compared on the same fixed holdout. S2/S3 records can be indexed as unlabeled retrieval corpus for their respective split; test labels do not exist. A `France` test accuracy is unknowable locally.
+
+## 6. Change control and unresolved choices
+
+The contracts above and temporary starting values are fixed now. The following **final** choices remain experimental: enabled retrieval routes and candidate cap, address parser rules, model type, negative sampling ratio, threshold policy, batch sizes, and cache/index format. Each owner proposes these in their PR with measurements; Harshit records the accepted config. If a teammate needs a new field or behavior, they update this file and request affected-owner review before coding against it. When the organizer's materials are ambiguous, quote the exact conflict in the PR and select the interpretation that satisfies both where possible.

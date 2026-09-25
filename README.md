@@ -42,6 +42,7 @@ Candidate retrieval determines which true links remain possible; the model deter
 | --- | --- |
 | [PLAN.md](PLAN.md) | Scope, milestones, technical strategy, and submission gates |
 | [docs/CONTRACTS.md](docs/CONTRACTS.md) | Shared file, data, and function contracts |
+| [docs/DECISION-REGISTER.md](docs/DECISION-REGISTER.md) | Open implementation choices, owners, and evidence needed to close them |
 | [docs/VERIFICATION.md](docs/VERIFICATION.md) | Offline scoring, blocking checks, output validation, and experiment records |
 | [docs/TEAM-WORKFLOW.md](docs/TEAM-WORKFLOW.md) | Branches, PR reviews, integration, and handoffs |
 | [Harshit assignment](docs/01-HARSHIT.md) | Model, thresholding, integration, release |
@@ -54,7 +55,7 @@ Candidate retrieval determines which true links remain possible; the model deter
 ```text
 code/business_entity_resolution/
   src/ber/                 # self-contained pipeline code
-  tests/                   # fast fixtures and behavioral tests
+  src/tests/               # fast fixtures and behavioral tests, shipped under src/
   README.md                # exact data -> outputs reproduction steps
   requirements.txt         # pinned, license-reviewed dependencies
 docs/                     # ownership, contracts, verification
@@ -62,6 +63,8 @@ output/                   # generated locally; not committed
 ```
 
 Only the original archive is tracked with Git LFS. Extracted TSVs, generated indexes, models, and output TSVs stay out of Git. The final submission zip will contain the required code and output files. Do not send business records to outside lookup services, geocoders, or entity-resolution APIs.
+
+Each teammate uses their own organizer-provided archive. It may be unpacked under the ignored local `student_resource/` directory or elsewhere; commands take a data-root path and never assume one person's absolute path. Keep the dataset out of commits and PR attachments.
 
 ## Immediate order of work
 
@@ -71,3 +74,7 @@ Only the original archive is tracked with Git LFS. Extracted TSVs, generated ind
 4. Improve the largest measured failure mode, freeze the best reproducible run, validate both outputs, and submit.
 
 All implementation changes after this repository bootstrap use PRs into `main`. See [team workflow](docs/TEAM-WORKFLOW.md).
+
+## Starting an agent or teammate on a workstream
+
+Give them the repository link and their assignment file. They must read `AGENTS.md`, the shared contracts, verification rules, decision register, and their assignment before editing. Start from current `main`, make the branch named in the assignment, and open the first PR listed there. When a detail is marked open in the decision register, propose and measure it in the owner's PR; do not silently assume a value. Do not describe any planned module, score, or full-scale run as already implemented.

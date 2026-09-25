@@ -1,6 +1,6 @@
 # Working rules for Business Entity Resolution
 
-Read `README.md`, `PLAN.md`, `docs/CONTRACTS.md`, `docs/VERIFICATION.md`, `docs/TEAM-WORKFLOW.md`, and the relevant owner assignment before editing. This repository currently contains a plan; do not report proposed models, experiments, or scores as implemented or measured.
+Read `README.md`, `PLAN.md`, `docs/CONTRACTS.md`, `docs/DECISION-REGISTER.md`, `docs/VERIFICATION.md`, `docs/TEAM-WORKFLOW.md`, and the relevant owner assignment before editing. This repository currently contains a plan; do not report proposed models, experiments, or scores as implemented or measured.
 
 ## Scope and ownership
 
