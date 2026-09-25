@@ -143,56 +143,21 @@ python utils/validate_submission.py \
     --check-ids
 ```
 
-**Via BER CLI:**
-```
-ber validate \
-    --test-s1 student_resource/dataset/test/test_source1.tsv \
-    --matching output/matching_results.tsv \
-    --candidates output/candidate_pairs.tsv \
-    --run-organizer
-```
-
 > ⚠️ **A PASS here means FORMAT/COVERAGE/CONSISTENCY PASS only.**
 > It does NOT mean ML quality PASS. Never claim a score based only on the organizer validator.
 
-## CLI Commands (Suresh)
+## Integration status
 
-```bash
-# Compute macro F0.5
-ber evaluate \
-    --truth data/train_ground_truth.tsv \
-    --predictions output/matching_results.tsv \
-    --candidates output/candidate_pairs.tsv
-
-# Candidate diagnostics
-ber candidates \
-    --truth data/train_ground_truth.tsv \
-    --candidates output/candidate_pairs.tsv \
-    --corpus-size 9969589
-
-# Preflight validation
-ber validate \
-    --test-s1 student_resource/dataset/test/test_source1.tsv \
-    --matching output/matching_results.tsv \
-    --candidates output/candidate_pairs.tsv \
-    --run-organizer
-
-# Error analysis
-ber error-analysis \
-    --truth data/train_ground_truth.tsv \
-    --predictions output/matching_results.tsv \
-    --candidates output/candidate_pairs.tsv \
-    --verbose
-```
+The functions in `ber.metrics` and `ber.output` are importable Python APIs. The shared `ber.cli` command names and path flags remain H0 stubs; this PR does not add runnable evaluation or error-analysis CLI commands. Harshit's later integration work will connect these APIs to the shared pipeline.
 
 ## Synthetic Test Command
 
 ```bash
 cd code/business_entity_resolution
-python -m pytest tests/ -v --tb=short
+python -m pytest -q
 ```
 
-**74 tests, all PASS. Runtime: ~1.1s.**
+**118 tests passed** in the reviewed PR checkout. This is a synthetic test result, not a full challenge run.
 
 ## France (Unseen Country)
 
@@ -215,29 +180,25 @@ France appears in test data but **not** in training labels.
 | `evaluate()` | O(|S1| IDs) — truth index only |
 | `evaluate_candidates()` | O(|S1|) — counts list ~14 MB for 1.7M S1 |
 | `error_analysis()` | O(|S1| IDs) — no business name strings |
-| `write_outputs()` | O(|S1|) — sorted ID list, row-by-row write |
+| `write_outputs()` | O(|S1|) — input-order ID list plus streamed candidate/decision rows |
 | `validate_outputs()` | O(|S1| IDs) — streaming read |
 
-The 8 GB machine constraint is respected. No 10M-record corpus is loaded into RAM.
+The implementation avoids loading the 10M-record candidate corpus into memory. An 8 GB full-size run has not yet been measured.
 
 ## Limitations
 
 - `evaluate()` loads the full truth index into memory (S1 IDs only, ~100 MB for 1.7M entities).
 - Candidate count distribution uses an exact sorted list. On 1.7M S1, this is ~14 MB (acceptable).
   For stricter memory requirements, switch to a t-digest approximation and document.
-- Organizer validator `--check-ids` requires loading all S2/S3 IDs (~few GB); use without `--candidate` if memory is tight.
+- Optional organizer ID-existence checking may require substantial memory; measure it before a full-size run.
 - No full-scale run has been measured yet. This documentation covers the implementation only.
   Harshit must run the complete pipeline and record actual metrics.
 
 ## Handoff to Harshit
 
-### Evaluation commands
-```bash
-ber evaluate --truth <truth_tsv> --predictions <matching_tsv> [--candidates <candidates_tsv>]
-ber candidates --truth <truth_tsv> --candidates <candidates_tsv> [--corpus-size <N>]
-ber error-analysis --truth <truth_tsv> --predictions <matching_tsv> --candidates <candidates_tsv> --verbose
-ber validate --test-s1 <test_source1.tsv> --matching <matching_tsv> --candidates <candidates_tsv> --run-organizer
-```
+### Python APIs awaiting pipeline integration
+
+`ber.metrics.evaluate`, `ber.metrics.evaluate_candidates`, and `ber.metrics.error_analysis` provide score and error reports. `ber.output.write_outputs`, `ber.output.validate_outputs`, and `ber.output.run_organizer_validator` provide output and validation behavior. Call them through their documented signatures until the shared CLI integration PR lands.
 
 ### Report schema
 All results are structured dataclasses (`EvaluationResult`, `CandidateResult`, `ErrorReport`) — JSON-serializable if needed.

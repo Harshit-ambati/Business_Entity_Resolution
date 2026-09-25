@@ -472,4 +472,3 @@ class TestValidateOutputs:
         assert not result.passed
         problem_types = [e.problem_type for e in result.errors]
         assert "MALFORMED_ROW" in problem_types
-
