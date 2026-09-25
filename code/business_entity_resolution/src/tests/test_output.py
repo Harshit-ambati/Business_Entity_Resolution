@@ -93,8 +93,8 @@ class TestWriteOutputs:
         # Row: "S1-001\t"
         assert lines[1] == "S1-001\t"
 
-    def test_deterministic_order(self, tmp_path):
-        """S1 IDs must be sorted; ID lists within rows must be sorted."""
+    def test_preserves_input_order(self, tmp_path):
+        """S1 row order must preserve test_s1 input order; ID lists within rows must be sorted."""
         test_s1 = ["S1-003", "S1-001", "S1-002"]
         candidates = {
             "S1-001": ["S2-002", "S2-001"],
@@ -110,7 +110,7 @@ class TestWriteOutputs:
         with open(mpath, encoding="utf-8") as f:
             lines = f.read().splitlines()[1:]  # skip header
         s1_ids = [line.split("\t")[0] for line in lines]
-        assert s1_ids == sorted(s1_ids), "S1 IDs must be in sorted order"
+        assert s1_ids == test_s1, "S1 IDs must match input test_s1 order exactly"
         # Check IDs within row sorted
         for line in lines:
             parts = line.split("\t", 1)
@@ -118,16 +118,18 @@ class TestWriteOutputs:
                 ids = parts[1].split(",")
                 assert ids == sorted(ids), f"IDs in {parts[0]} must be sorted"
 
-    def test_duplicate_ids_deduplicated(self, tmp_path):
-        """Duplicate IDs in predictions or candidates are removed."""
+    def test_duplicate_ids_raise_in_write_outputs(self, tmp_path):
+        """Duplicate IDs in predictions or candidates raise ValueError."""
         test_s1 = ["S1-001"]
         candidates = {"S1-001": ["S2-001", "S2-001", "S2-002"]}
-        decisions = {"S1-001": ["S2-001", "S2-001"]}
-        mpath, cpath = write_outputs(test_s1, candidates, decisions, str(tmp_path))
-        with open(mpath, encoding="utf-8") as f:
-            content = f.read().splitlines()[1]
-        ids = content.split("\t")[1].split(",")
-        assert len(ids) == len(set(ids)), "No duplicate IDs in matching output"
+        decisions = {"S1-001": ["S2-001"]}
+        with pytest.raises(ValueError, match="Duplicate candidate IDs"):
+            write_outputs(test_s1, candidates, decisions, str(tmp_path))
+
+        candidates_ok = {"S1-001": ["S2-001", "S2-002"]}
+        decisions_dup = {"S1-001": ["S2-001", "S2-001"]}
+        with pytest.raises(ValueError, match="Duplicate decision IDs"):
+            write_outputs(test_s1, candidates_ok, decisions_dup, str(tmp_path))
 
     def test_prediction_outside_candidates_raises(self, tmp_path):
         """Prediction not in candidates raises ValueError."""
@@ -151,17 +153,25 @@ class TestWriteOutputs:
         assert "S2-001" in ids
         assert "S3-002" in ids
 
-    def test_invalid_id_prefix_excluded(self, tmp_path):
-        """IDs without S2-/S3- prefix are excluded from output."""
+    def test_invalid_id_prefix_raises(self, tmp_path):
+        """IDs without S2-/S3- prefix raise ValueError."""
         test_s1 = ["S1-001"]
-        candidates = {"S1-001": ["S2-001", "S1-BAD", "GARBAGE"]}
+        candidates = {"S1-001": ["S2-001", "S1-BAD"]}
         decisions = {"S1-001": ["S2-001"]}
-        _, cpath = write_outputs(test_s1, candidates, decisions, str(tmp_path))
-        with open(cpath, encoding="utf-8") as f:
-            line = f.read().splitlines()[1]
-        ids_str = line.split("\t")[1]
-        assert "S1-BAD" not in ids_str
-        assert "GARBAGE" not in ids_str
+        with pytest.raises(ValueError, match="Invalid candidate entity ID"):
+            write_outputs(test_s1, candidates, decisions, str(tmp_path))
+
+    def test_atomic_write_cleans_up_on_failure(self, tmp_path):
+        """Failed write leaves no partial destination or temporary files."""
+        test_s1 = ["S1-001"]
+        candidates = {"S1-001": ["S2-001"]}
+        decisions = {"S1-001": ["S2-002"]}  # invalid subset!
+        with pytest.raises(ValueError):
+            write_outputs(test_s1, candidates, decisions, str(tmp_path))
+        assert not (tmp_path / "matching_results.tsv").exists()
+        assert not (tmp_path / "candidate_pairs.tsv").exists()
+        assert not (tmp_path / ".matching_results.tsv.tmp").exists()
+        assert not (tmp_path / ".candidate_pairs.tsv.tmp").exists()
 
     def test_utf8_encoding(self, tmp_path):
         """Output files must be valid UTF-8."""
@@ -303,7 +313,8 @@ class TestValidateOutputs:
         result = validate_outputs(s1_path, str(tmp_path / "nonexistent.tsv"))
         assert not result.passed
 
-    def test_candidate_missing_warns_not_fails(self, tmp_path):
+    def test_candidate_missing_file_fails(self, tmp_path):
+        """If candidate_pairs_path is specified but does not exist, validation must fail."""
         s1_path = str(tmp_path / "test_source1.tsv")
         m_path = str(tmp_path / "matching_results.tsv")
 
@@ -314,8 +325,39 @@ class TestValidateOutputs:
             s1_path, m_path,
             candidate_pairs_path=str(tmp_path / "nonexistent.tsv")
         )
-        assert result.passed  # missing candidate is a warning, not error
-        assert any("candidate_pairs.tsv" in w for w in result.warnings)
+        assert not result.passed
+        assert any(e.problem_type == "MISSING_CANDIDATE_FILE" for e in result.errors)
+
+    def test_candidate_mandatory_when_require_candidates_true(self, tmp_path):
+        """When require_candidates=True, omitting candidate_pairs_path must fail."""
+        s1_path = str(tmp_path / "test_source1.tsv")
+        m_path = str(tmp_path / "matching_results.tsv")
+
+        _write_source1(s1_path, ["S1-001"])
+        _write_matching(m_path, [("S1-001", "")])
+
+        result = validate_outputs(
+            s1_path, m_path,
+            candidate_pairs_path=None,
+            require_candidates=True,
+        )
+        assert not result.passed
+        assert any(e.problem_type == "MISSING_CANDIDATE_FILE" for e in result.errors)
+
+    def test_duplicate_target_ids_in_tsv_detected(self, tmp_path):
+        """Duplicate target IDs in matching_results.tsv or candidate_pairs.tsv must fail."""
+        s1_path = str(tmp_path / "test_source1.tsv")
+        m_path = str(tmp_path / "matching_results.tsv")
+        c_path = str(tmp_path / "candidate_pairs.tsv")
+
+        _write_source1(s1_path, ["S1-001"])
+        _write_matching(m_path, [("S1-001", "S2-001,S2-001")])
+        _write_candidates(c_path, [("S1-001", "S2-001")])
+
+        result = validate_outputs(s1_path, m_path, c_path)
+        assert not result.passed
+        problem_types = [e.problem_type for e in result.errors]
+        assert "DUPLICATE_IDS" in problem_types
 
     def test_tsv_with_comma_in_id_list_parsed_correctly(self, tmp_path):
         """Comma inside the second TSV column is the ID separator, not a field

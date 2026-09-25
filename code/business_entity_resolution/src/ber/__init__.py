@@ -24,6 +24,8 @@ from .output import (
     ValidationResult,
 )
 
+__version__ = "0.1.0"
+
 __all__ = [
     "Record",
     "TruthRow",

@@ -36,13 +36,16 @@ import subprocess
 import sys
 from dataclasses import dataclass, field
 from typing import (
+    Any,
     Dict,
     FrozenSet,
     Iterable,
     List,
+    Mapping,
     Optional,
     Set,
     Tuple,
+    Union,
 )
 
 
@@ -140,14 +143,14 @@ def _read_s1_ids_from_source(path: str) -> List[str]:
 
 def _read_output_tsv(
     path: str,
-) -> Tuple[List[str], Dict[str, FrozenSet[str]], List[str]]:
+) -> Tuple[List[str], Dict[str, List[str]], List[str]]:
     """Read an output TSV (matching or candidate).
 
     Returns:
-        (ordered_s1_ids, s1_to_ids_map, raw_header_columns)
+        (ordered_s1_ids, s1_to_ids_list_map, raw_header_columns)
     """
     ordered_ids: List[str] = []
-    mapping: Dict[str, FrozenSet[str]] = {}
+    mapping: Dict[str, List[str]] = {}
     with open(path, encoding="utf-8", newline="") as fh:
         header_line = fh.readline()
         header_cols = [c.strip().lower() for c in header_line.rstrip("\n").split("\t")]
@@ -160,11 +163,10 @@ def _read_output_tsv(
             if not s1_id:
                 continue
             raw_ids = parts[1].strip() if len(parts) > 1 else ""
-            ids = (
-                frozenset(i.strip() for i in raw_ids.split(",") if i.strip())
-                if raw_ids
-                else frozenset()
-            )
+            if raw_ids:
+                ids = [i.strip() for i in raw_ids.split(",")]
+            else:
+                ids = []
             ordered_ids.append(s1_id)
             mapping[s1_id] = ids
     return ordered_ids, mapping, header_cols
@@ -177,79 +179,153 @@ def _read_output_tsv(
 
 def write_outputs(
     test_s1: Iterable[str],
-    candidates: Dict[str, Iterable[str]],
-    decisions: Dict[str, Iterable[str]],
+    candidates: Union[Dict[str, Iterable[str]], Iterable[Any]],
+    decisions: Union[Dict[str, Iterable[str]], Iterable[Any]],
     output_dir: str,
 ) -> Tuple[str, str]:
     """Write matching_results.tsv and candidate_pairs.tsv.
 
     Args:
-        test_s1:    Iterable of all test S1 entity IDs (in any order).
-        candidates: {s1_id: iterable of candidate S2/S3 IDs}.
-                    IDs for S1s with no candidates may be absent or empty.
-        decisions:  {s1_id: iterable of predicted S2/S3 IDs}.
-                    Must be a subset of the candidate set for each S1.
+        test_s1:    Iterable of all test S1 entity IDs (preserved in exact input order).
+        candidates: Mapping or iterable of candidates.
+        decisions:  Mapping or iterable of decisions.
         output_dir: Directory to write output files into.
 
     Returns:
         (matching_path, candidate_path) absolute paths.
 
     Rules enforced:
-      - Exactly one row per test S1 (in sorted S1 ID order).
-      - Duplicate IDs within a list are removed; sorted for determinism.
-      - Final predictions must be a subset of candidates (raises ValueError
-        if violated; do not emit invalid output).
-      - Only S2-/S3- prefixes are valid in output lists.
-      - Empty lists write as empty string in second column.
+      - Preserves exact test_s1 input sequence (no sorting).
+      - Rejects duplicate S1 IDs in test_s1.
+      - Strictly validates that all IDs start with S2- or S3- and have non-empty suffix.
+      - Rejects duplicate IDs within candidate or decision lists.
+      - Enforces that decisions are a subset of candidates for every S1.
+      - Atomic write: writes to temporary files and atomically renames only upon full success.
+        Cleans up temporary files on any failure, leaving no partial files.
     """
     os.makedirs(output_dir, exist_ok=True)
 
-    all_s1: List[str] = sorted(set(test_s1))
+    all_s1: List[str] = []
+    seen_s1: Set[str] = set()
+    for item in test_s1:
+        s1_id = item.entity_id if hasattr(item, "entity_id") else item
+        if not isinstance(s1_id, str) or not s1_id.startswith("S1-") or len(s1_id) <= 3:
+            raise ValueError(f"Invalid S1 ID in test_s1: {s1_id!r}")
+        if s1_id in seen_s1:
+            raise ValueError(f"Duplicate S1 ID in test_s1: {s1_id}")
+        seen_s1.add(s1_id)
+        all_s1.append(s1_id)
+
+    # Handle candidate intake (mapping vs stream)
+    cand_map: Optional[Dict[str, List[str]]] = None
+    cand_iter = None
+    if isinstance(candidates, Mapping):
+        cand_map = {}
+        for sid, cids in candidates.items():
+            cand_map[sid] = list(cids)
+    else:
+        cand_iter = iter(candidates)
+
+    # Handle decision intake (mapping vs stream)
+    dec_map: Optional[Dict[str, List[str]]] = None
+    dec_iter = None
+    if isinstance(decisions, Mapping):
+        dec_map = {}
+        for sid, dids in decisions.items():
+            dec_map[sid] = list(dids)
+    else:
+        dec_iter = iter(decisions)
 
     matching_path = os.path.join(output_dir, "matching_results.tsv")
     candidate_path = os.path.join(output_dir, "candidate_pairs.tsv")
+    matching_tmp = os.path.join(output_dir, ".matching_results.tsv.tmp")
+    candidate_tmp = os.path.join(output_dir, ".candidate_pairs.tsv.tmp")
 
-    subset_violations: List[str] = []
+    try:
+        with (
+            open(matching_tmp, "w", encoding="utf-8", newline="") as mf,
+            open(candidate_tmp, "w", encoding="utf-8", newline="") as cf,
+        ):
+            mf.write(MATCHING_HEADER + "\n")
+            cf.write(CANDIDATE_HEADER + "\n")
 
-    with (
-        open(matching_path, "w", encoding="utf-8", newline="") as mf,
-        open(candidate_path, "w", encoding="utf-8", newline="") as cf,
-    ):
-        mf.write(MATCHING_HEADER + "\n")
-        cf.write(CANDIDATE_HEADER + "\n")
+            for s1_id in all_s1:
+                # Retrieve raw candidate list
+                if cand_map is not None:
+                    raw_cands = cand_map.get(s1_id, [])
+                else:
+                    try:
+                        cand_item = next(cand_iter)
+                    except StopIteration:
+                        raise ValueError(f"Candidate stream ended prematurely; missing {s1_id}")
+                    if hasattr(cand_item, "source1_entity_id") and hasattr(cand_item, "candidates"):
+                        c_sid = cand_item.source1_entity_id
+                        raw_cands = [c.candidate_entity_id for c in cand_item.candidates]
+                    else:
+                        c_sid, raw_cands = cand_item
+                    if c_sid != s1_id:
+                        raise ValueError(f"Candidate stream misalignment: expected {s1_id}, got {c_sid}")
 
-        for s1_id in all_s1:
-            # Build deduplicated, sorted candidate set
-            raw_cands = candidates.get(s1_id, [])
-            cand_set: FrozenSet[str] = frozenset(
-                cid for cid in raw_cands if cid and cid.startswith(VALID_MATCH_PREFIXES)
-            )
-            cand_str = ",".join(sorted(cand_set))
+                # Retrieve raw decision list
+                if dec_map is not None:
+                    raw_preds = dec_map.get(s1_id, [])
+                else:
+                    try:
+                        dec_item = next(dec_iter)
+                    except StopIteration:
+                        raise ValueError(f"Decision stream ended prematurely; missing {s1_id}")
+                    if hasattr(dec_item, "source1_entity_id") and hasattr(dec_item, "matched_entity_ids"):
+                        d_sid = dec_item.source1_entity_id
+                        raw_preds = list(dec_item.matched_entity_ids)
+                    else:
+                        d_sid, raw_preds = dec_item
+                    if d_sid != s1_id:
+                        raise ValueError(f"Decision stream misalignment: expected {s1_id}, got {d_sid}")
 
-            # Build deduplicated, sorted decision set
-            raw_preds = decisions.get(s1_id, [])
-            pred_set: FrozenSet[str] = frozenset(
-                pid for pid in raw_preds if pid and pid.startswith(VALID_MATCH_PREFIXES)
-            )
-            pred_str = ",".join(sorted(pred_set))
+                # Strict validation of candidate IDs
+                cand_list = list(raw_cands)
+                for cid in cand_list:
+                    if not isinstance(cid, str) or not any(cid.startswith(p) and len(cid) > len(p) for p in VALID_MATCH_PREFIXES):
+                        raise ValueError(f"Invalid candidate entity ID for {s1_id}: {cid!r}")
+                if len(cand_list) != len(set(cand_list)):
+                    raise ValueError(f"Duplicate candidate IDs for {s1_id}: {cand_list}")
 
-            # Enforce: predictions must be subset of candidates
-            violating = pred_set - cand_set
-            if violating:
-                subset_violations.append(
-                    f"{s1_id}: predicted IDs not in candidates: "
-                    f"{sorted(violating)[:5]}"
-                )
+                # Strict validation of decision IDs
+                pred_list = list(raw_preds)
+                for pid in pred_list:
+                    if not isinstance(pid, str) or not any(pid.startswith(p) and len(pid) > len(p) for p in VALID_MATCH_PREFIXES):
+                        raise ValueError(f"Invalid decision entity ID for {s1_id}: {pid!r}")
+                if len(pred_list) != len(set(pred_list)):
+                    raise ValueError(f"Duplicate decision IDs for {s1_id}: {pred_list}")
 
-            cf.write(f"{s1_id}\t{cand_str}\n")
-            mf.write(f"{s1_id}\t{pred_str}\n")
+                # Strict subset validation
+                cand_set = set(cand_list)
+                pred_set = set(pred_list)
+                violating = pred_set - cand_set
+                if violating:
+                    raise ValueError(
+                        f"write_outputs: predictions not subset of candidates for {s1_id}. "
+                        f"Violations: {sorted(violating)}"
+                    )
 
-    if subset_violations:
-        violation_str = "; ".join(subset_violations[:5])
-        raise ValueError(
-            f"write_outputs: predictions not subset of candidates. "
-            f"Violations: {violation_str}"
-        )
+                cand_str = ",".join(sorted(cand_list))
+                pred_str = ",".join(sorted(pred_list))
+
+                cf.write(f"{s1_id}\t{cand_str}\n")
+                mf.write(f"{s1_id}\t{pred_str}\n")
+
+        # Atomically publish upon complete success
+        os.replace(matching_tmp, matching_path)
+        os.replace(candidate_tmp, candidate_path)
+
+    except Exception:
+        for tmp in (matching_tmp, candidate_tmp):
+            if os.path.exists(tmp):
+                try:
+                    os.remove(tmp)
+                except OSError:
+                    pass
+        raise
 
     return matching_path, candidate_path
 
@@ -265,6 +341,7 @@ def validate_outputs(
     candidate_pairs_path: Optional[str] = None,
     valid_s2s3_ids: Optional[Set[str]] = None,
     country_labels: Optional[Dict[str, str]] = None,
+    require_candidates: bool = False,
 ) -> ValidationResult:
     """Preflight-validate output files before submission.
 
@@ -272,13 +349,14 @@ def validate_outputs(
     plus additional internal consistency rules.
 
     Args:
-        test_s1_path:         Path to test_source1.tsv.
+        test_s1_path:          Path to test_source1.tsv.
         matching_results_path: Path to matching_results.tsv to validate.
-        candidate_pairs_path:  Optional path to candidate_pairs.tsv.
+        candidate_pairs_path:  Path to candidate_pairs.tsv. Required for submission.
         valid_s2s3_ids:        Optional set of all valid S2/S3 IDs for
                                existence checking (memory-heavy; load only
                                when --check-ids is desired).
         country_labels:        Optional {s1_id: country} for France coverage.
+        require_candidates:    If True, candidate_pairs_path is mandatory even if None.
 
     Returns:
         ValidationResult with passed=True only if all blocking checks pass.
@@ -367,12 +445,17 @@ def validate_outputs(
             context=f"{len(extra_s1)} rows for S1 IDs not in test set",
         )
 
-    # ID validity in matching_results.tsv
+    # ID validity in matching_results.tsv (check duplicate IDs and prefixes)
     for s1_id, pred_ids in m_mapping.items():
+        if len(pred_ids) != len(set(pred_ids)):
+            _add_error(
+                s1_id, "DUPLICATE_IDS",
+                invalid_ids=pred_ids,
+                context=f"Duplicate entity IDs in matching_results.tsv for {s1_id}: {pred_ids}",
+            )
         bad_ids = [
-            pid
-            for pid in pred_ids
-            if not pid.startswith(VALID_MATCH_PREFIXES)
+            pid for pid in pred_ids
+            if not any(pid.startswith(p) and len(pid) > len(p) for p in VALID_MATCH_PREFIXES)
         ]
         if bad_ids:
             _add_error(s1_id, "INVALID_ID_PREFIX",
@@ -401,86 +484,97 @@ def validate_outputs(
                 context=f"{len(france_missing)} French S1 IDs have no output row",
             )
 
-    # ---- 4. Validate candidate_pairs.tsv (optional) ----
-    c_mapping: Optional[Dict[str, FrozenSet[str]]] = None
-    if candidate_pairs_path:
-        if not os.path.isfile(candidate_pairs_path):
-            result.warnings.append(
-                f"candidate_pairs.tsv not found at {candidate_pairs_path}. "
-                "Skipping candidate checks. File is required in final submission zip."
+    # ---- 4. Validate candidate_pairs.tsv (mandatory) ----
+    c_mapping: Optional[Dict[str, List[str]]] = None
+    if candidate_pairs_path is None:
+        if require_candidates:
+            _add_error(
+                None, "MISSING_CANDIDATE_FILE",
+                context="candidate_pairs.tsv is mandatory for submission validation but was not provided",
             )
-        else:
-            try:
-                c_ordered, c_mapping, c_header = _read_output_tsv(
-                    candidate_pairs_path
+    elif not os.path.isfile(candidate_pairs_path):
+        _add_error(
+            None, "MISSING_CANDIDATE_FILE",
+            context=f"candidate_pairs.tsv not found at {candidate_pairs_path}. File is required in final submission zip.",
+        )
+    else:
+        try:
+            c_ordered, c_mapping, c_header = _read_output_tsv(
+                candidate_pairs_path
+            )
+        except UnicodeDecodeError as e:
+            _add_error(None, "ENCODING_ERROR",
+                       context=f"{candidate_pairs_path}: {e}")
+            c_mapping = None
+
+        if c_mapping is not None:
+            expected_c_header = ["source1_entity_id", "candidate_entity_ids"]
+            if c_header != expected_c_header:
+                _add_error(
+                    None, "WRONG_HEADER",
+                    context=f"candidate_pairs.tsv: got {c_header}, "
+                            f"expected {expected_c_header}",
                 )
-            except UnicodeDecodeError as e:
-                _add_error(None, "ENCODING_ERROR",
-                           context=f"{candidate_pairs_path}: {e}")
-                c_mapping = None
 
-            if c_mapping is not None:
-                expected_c_header = ["source1_entity_id", "candidate_entity_ids"]
-                if c_header != expected_c_header:
-                    _add_error(
-                        None, "WRONG_HEADER",
-                        context=f"candidate_pairs.tsv: got {c_header}, "
-                                f"expected {expected_c_header}",
-                    )
+            result.candidate_rows = len(c_mapping)
+            result.empty_candidate_rows = sum(
+                1 for v in c_mapping.values() if not v
+            )
 
-                result.candidate_rows = len(c_mapping)
-                result.empty_candidate_rows = sum(
-                    1 for v in c_mapping.values() if not v
+            c_seen: Set[str] = set()
+            for s1_id in c_ordered:
+                if s1_id in c_seen:
+                    _add_error(s1_id, "DUPLICATE_S1_ROW",
+                               context="candidate_pairs.tsv")
+                c_seen.add(s1_id)
+
+            c_missing = required_s1 - c_seen
+            c_extra = c_seen - required_s1
+            if c_missing:
+                _add_error(
+                    None, "MISSING_S1_ROWS",
+                    invalid_ids=sorted(c_missing)[:10],
+                    context=f"{len(c_missing)} S1 IDs missing from "
+                            "candidate_pairs.tsv",
+                )
+            if c_extra:
+                _add_error(
+                    None, "EXTRA_S1_ROWS",
+                    invalid_ids=sorted(c_extra)[:10],
+                    context=f"{len(c_extra)} extra rows in candidate_pairs.tsv",
                 )
 
-                c_seen: Set[str] = set()
-                for s1_id in c_ordered:
-                    if s1_id in c_seen:
-                        _add_error(s1_id, "DUPLICATE_S1_ROW",
-                                   context="candidate_pairs.tsv")
-                    c_seen.add(s1_id)
-
-                c_missing = required_s1 - c_seen
-                c_extra = c_seen - required_s1
-                if c_missing:
+            for s1_id, cand_ids in c_mapping.items():
+                if len(cand_ids) != len(set(cand_ids)):
                     _add_error(
-                        None, "MISSING_S1_ROWS",
-                        invalid_ids=sorted(c_missing)[:10],
-                        context=f"{len(c_missing)} S1 IDs missing from "
-                                "candidate_pairs.tsv",
+                        s1_id, "DUPLICATE_IDS",
+                        invalid_ids=cand_ids,
+                        context=f"Duplicate entity IDs in candidate_pairs.tsv for {s1_id}: {cand_ids}",
                     )
-                if c_extra:
-                    _add_error(
-                        None, "EXTRA_S1_ROWS",
-                        invalid_ids=sorted(c_extra)[:10],
-                        context=f"{len(c_extra)} extra rows in candidate_pairs.tsv",
-                    )
-
-                for s1_id, cand_ids in c_mapping.items():
-                    bad_ids = [
-                        cid for cid in cand_ids
-                        if not cid.startswith(VALID_MATCH_PREFIXES)
+                bad_ids = [
+                    cid for cid in cand_ids
+                    if not any(cid.startswith(p) and len(cid) > len(p) for p in VALID_MATCH_PREFIXES)
+                ]
+                if bad_ids:
+                    _add_error(s1_id, "INVALID_ID_PREFIX",
+                               invalid_ids=bad_ids[:5],
+                               context="candidate_pairs.tsv")
+                if valid_s2s3_ids is not None:
+                    unknown = [
+                        cid for cid in cand_ids if cid not in valid_s2s3_ids
                     ]
-                    if bad_ids:
-                        _add_error(s1_id, "INVALID_ID_PREFIX",
-                                   invalid_ids=bad_ids[:5],
+                    if unknown:
+                        _add_error(s1_id, "UNKNOWN_S2S3_IDS",
+                                   invalid_ids=unknown[:5],
                                    context="candidate_pairs.tsv")
-                    if valid_s2s3_ids is not None:
-                        unknown = [
-                            cid for cid in cand_ids if cid not in valid_s2s3_ids
-                        ]
-                        if unknown:
-                            _add_error(s1_id, "UNKNOWN_S2S3_IDS",
-                                       invalid_ids=unknown[:5],
-                                       context="candidate_pairs.tsv")
 
     # ---- 5. Subset check: predictions must be subset of candidates ----
     if c_mapping is not None and m_mapping:
         for s1_id, pred_ids in m_mapping.items():
             if not pred_ids:
                 continue
-            cand_ids = c_mapping.get(s1_id, frozenset())
-            violating = pred_ids - cand_ids
+            cand_ids = set(c_mapping.get(s1_id, []))
+            violating = set(pred_ids) - cand_ids
             if violating:
                 _add_error(
                     s1_id, "PREDICTION_NOT_SUBSET_OF_CANDIDATES",

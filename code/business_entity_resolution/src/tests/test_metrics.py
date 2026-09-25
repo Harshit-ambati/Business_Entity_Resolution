@@ -250,13 +250,37 @@ class TestEvaluate:
         r = evaluate(truth, preds)
         assert r.macro_f0_5 == APPROX(1.0)
 
-    def test_missing_prediction_treated_as_empty(self):
-        """S1 with truth but no prediction row -> score = 0."""
+    def test_missing_prediction_raises_value_error(self):
+        """S1 with truth but no prediction row must raise ValueError."""
         truth = _truth(("S1-001", ["S2-001"]))
         preds = []  # no predictions at all
-        r = evaluate(truth, preds)
-        assert r.macro_f0_5 == APPROX(0.0)
-        assert r.false_negative_count == 1
+        with pytest.raises(ValueError, match="Missing prediction rows"):
+            evaluate(truth, preds)
+
+    def test_harshit_probe_missing_singleton_raises(self):
+        """Replicates Harshit's probe: missing singleton prediction cannot score 1.0."""
+        truth = [("S1-A", set()), ("S1-B", {"S2-X"})]
+        predictions = [("S1-B", {"S2-X"})]  # S1-A missing
+        with pytest.raises(ValueError, match="Missing prediction rows"):
+            evaluate(truth, predictions)
+
+    def test_duplicate_truth_s1_raises(self):
+        truth = [("S1-001", set()), ("S1-001", {"S2-001"})]
+        preds = [("S1-001", set())]
+        with pytest.raises(ValueError, match="Duplicate S1 ID in ground truth"):
+            evaluate(truth, preds)
+
+    def test_duplicate_prediction_s1_raises(self):
+        truth = [("S1-001", set())]
+        preds = [("S1-001", set()), ("S1-001", {"S2-001"})]
+        with pytest.raises(ValueError, match="Duplicate S1 ID in predictions"):
+            evaluate(truth, preds)
+
+    def test_unexpected_prediction_s1_raises(self):
+        truth = [("S1-001", set())]
+        preds = [("S1-001", set()), ("S1-EXTRA", set())]
+        with pytest.raises(ValueError, match="Unexpected prediction rows"):
+            evaluate(truth, preds)
 
 
 # ---------------------------------------------------------------------------
@@ -316,6 +340,20 @@ class TestEvaluateCandidates:
         r = evaluate_candidates(truth, cands)
         assert r.s2_true_edge_recall == APPROX(1.0)
         assert r.s3_true_edge_recall == APPROX(0.0)
+
+    def test_s2_recall_with_shared_targets(self):
+        """When multiple S1 link to the same S2 target, recall must never exceed 1.0."""
+        truth = _truth(
+            ("S1-001", ["S2-001"]),
+            ("S1-002", ["S2-001"]),
+        )
+        cands = _cands(
+            ("S1-001", ["S2-001"]),
+            ("S1-002", ["S2-001"]),
+        )
+        r = evaluate_candidates(truth, cands)
+        assert r.s2_true_edge_recall == APPROX(1.0)
+        assert r.true_edge_recall == APPROX(1.0)
 
     def test_distribution_stats(self):
         truth = _truth(

@@ -244,13 +244,41 @@ def evaluate(
     """
     # Step 1: load truth index
     truth_index: Dict[str, FrozenSet[str]] = {}
-    for s1_id, true_ids in truth:
+    for item in truth:
+        if hasattr(item, "source1_entity_id") and hasattr(item, "matched_entity_ids"):
+            s1_id = item.source1_entity_id
+            true_ids = item.matched_entity_ids
+        else:
+            s1_id, true_ids = item
+        if s1_id in truth_index:
+            raise ValueError(f"Duplicate S1 ID in ground truth: {s1_id}")
         truth_index[s1_id] = frozenset(true_ids)
 
-    # Step 2: load prediction index (deduplicate on intake)
+    # Step 2: load prediction index (reject duplicates and require complete alignment)
     pred_index: Dict[str, FrozenSet[str]] = {}
-    for s1_id, pred_ids in predictions:
+    for item in predictions:
+        if hasattr(item, "source1_entity_id") and hasattr(item, "matched_entity_ids"):
+            s1_id = item.source1_entity_id
+            pred_ids = item.matched_entity_ids
+        else:
+            s1_id, pred_ids = item
+        if s1_id in pred_index:
+            raise ValueError(f"Duplicate S1 ID in predictions: {s1_id}")
         pred_index[s1_id] = frozenset(pred_ids)
+
+    missing_in_pred = set(truth_index) - set(pred_index)
+    if missing_in_pred:
+        sample = sorted(missing_in_pred)[:5]
+        raise ValueError(
+            f"Missing prediction rows for {len(missing_in_pred)} truth S1 IDs (e.g. {sample})"
+        )
+
+    unexpected_in_pred = set(pred_index) - set(truth_index)
+    if unexpected_in_pred:
+        sample = sorted(unexpected_in_pred)[:5]
+        raise ValueError(
+            f"Unexpected prediction rows for {len(unexpected_in_pred)} S1 IDs not in truth (e.g. {sample})"
+        )
 
     # Step 3: compute per-entity scores
     scores: List[float] = []
@@ -268,7 +296,7 @@ def evaluate(
     per_entity: Optional[Dict[str, float]] = {} if store_per_entity else None
 
     for s1_id, true_ids in truth_index.items():
-        pred_ids = pred_index.get(s1_id, frozenset())
+        pred_ids = pred_index[s1_id]
 
         score = _f0_5_score(true_ids, pred_ids)
         scores.append(score)
@@ -423,21 +451,19 @@ def evaluate_candidates(
     """
     # Step 1: load truth index
     truth_index: Dict[str, FrozenSet[str]] = {}
-    s2_true_edge_ids: Set[str] = set()
-    s3_true_edge_ids: Set[str] = set()
-
-    for s1_id, true_ids in truth:
-        fz = frozenset(true_ids)
-        truth_index[s1_id] = fz
-        for tid in fz:
-            if tid.startswith("S2-"):
-                s2_true_edge_ids.add(tid)
-            elif tid.startswith("S3-"):
-                s3_true_edge_ids.add(tid)
+    for item in truth:
+        if hasattr(item, "source1_entity_id") and hasattr(item, "matched_entity_ids"):
+            s1_id = item.source1_entity_id
+            true_ids = item.matched_entity_ids
+        else:
+            s1_id, true_ids = item
+        if s1_id in truth_index:
+            raise ValueError(f"Duplicate S1 ID in ground truth: {s1_id}")
+        truth_index[s1_id] = frozenset(true_ids)
 
     total_true_edges = sum(len(v) for v in truth_index.values())
-    total_s2_edges = len(s2_true_edge_ids)
-    total_s3_edges = len(s3_true_edge_ids)
+    total_s2_edges = sum(1 for ids in truth_index.values() for tid in ids if tid.startswith("S2-"))
+    total_s3_edges = sum(1 for ids in truth_index.values() for tid in ids if tid.startswith("S3-"))
 
     # Step 2: iterate candidates
     cand_counts: List[int] = []
@@ -450,14 +476,24 @@ def evaluate_candidates(
     total_candidate_pairs = 0
     seen_s1: Set[str] = set()
 
-    for s1_id, cand_ids in candidates:
+    for item in candidates:
+        if hasattr(item, "source1_entity_id") and hasattr(item, "candidates"):
+            s1_id = item.source1_entity_id
+            cand_ids = tuple(c.candidate_entity_id for c in item.candidates)
+        else:
+            s1_id, cand_ids = item
+        if s1_id in seen_s1:
+            raise ValueError(f"Duplicate candidate group for S1 ID: {s1_id}")
         seen_s1.add(s1_id)
+        if s1_id not in truth_index:
+            raise ValueError(f"Unexpected candidate group for S1 ID not in truth: {s1_id}")
+
         cand_fz = frozenset(cand_ids)
         n = len(cand_fz)
         cand_counts.append(n)
         total_candidate_pairs += n
 
-        true_ids = truth_index.get(s1_id, frozenset())
+        true_ids = truth_index[s1_id]
         recalled = true_ids & cand_fz
         true_edges_recalled += len(recalled)
         for rid in recalled:
