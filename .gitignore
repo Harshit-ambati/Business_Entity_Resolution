@@ -1,0 +1,25 @@
+# Competition data and generated artifacts must not be committed.
+dataset/
+student_resource/
+output/
+artifacts/
+cache/
+*.parquet
+*.feather
+*.pkl
+*.pickle
+*.joblib
+*.onnx
+*.zip
+
+# Local environments and secrets
+.env
+.env.*
+!.env.example
+.venv/
+venv/
+__pycache__/
+.pytest_cache/
+.ruff_cache/
+*.py[cod]
+.DS_Store
