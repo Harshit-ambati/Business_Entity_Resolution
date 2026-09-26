@@ -1,6 +1,6 @@
-# Business Entity Resolution package — H1 pair model
+# Business Entity Resolution package — H2 decision API
 
-This package supplies shared contracts, the fixed Source 1 split, H1 pair features, an interpretable rule score, and a CPU LightGBM pair classifier. It has trained only on invented synthetic records. It has not generated competition outputs or measured competition quality.
+This package supplies shared contracts, the fixed Source 1 split, H1 pair features, an interpretable rule score, a CPU LightGBM pair classifier, and H2 score-to-link decisions. It has trained only on invented synthetic records. It has not generated competition outputs or measured competition quality.
 
 ## Layout and setup
 
@@ -41,9 +41,23 @@ python -m ber.cli predict --data-root student_resource/dataset --work-dir artifa
 python -m ber.cli validate --data-root student_resource/dataset --work-dir artifacts --output-dir output
 ```
 
-`python -m ber.cli --help` and per-command `--help` describe this interface. `train` reports that the H1 model API is ready while dataset training awaits merged data/normalization/index/blocking modules; other stages still report their H0 stub status. All unavailable stages exit with status 3. Missing required flags exit nonzero with an argparse error. No CLI stage creates artifacts or claims success yet.
+`python -m ber.cli --help` and per-command `--help` describe this interface. `train` reports that the H1 model API is ready. `evaluate` reports that H2 decision/evaluation APIs are ready. Both real dataset stages await merged data, normalization, index, and blocking modules and exit with status 3; no synthetic fallback occurs. Other stages still report their H0 stub status. Missing required flags exit nonzero with an argparse error. No CLI stage creates artifacts or claims success yet.
 
-**Production candidate retrieval, dataset model training, threshold tuning, evaluation, full inference, and official output generation remain pending.** Thulasi owns TSV ingestion/normalization, Sabeena owns indexing/blocking, and Suresh owns metrics/output. H1 model functions consume their shared contracts when merged.
+**Production candidate retrieval, dataset model training, real holdout threshold tuning/evaluation, full inference, and official output generation remain pending.** Thulasi owns TSV ingestion/normalization, Sabeena owns indexing/blocking, and Suresh owns metrics/output. H1/H2 functions consume their shared contracts when merged.
+
+## H2 decisions and evaluation
+
+`ber.decision.decide_group(source1_entity_id, candidates: CandidateGroup, pair_scores, config: DecisionConfig) -> Decision` emits every S2/S3 candidate whose aligned score is **greater than or equal to** the global threshold. It preserves candidate order, permits zero, one, or multiple links, and rejects count mismatches, invalid scores, and invalid thresholds. `DecisionConfig` is immutable. It never forces a match for a singleton or imposes one-to-one linking.
+
+`sweep_thresholds(truth_factory, scored_factory, model_name=..., country_labels=...)` uses Suresh's `evaluate` for official per-S1 macro F0.5 and `evaluate_candidates` for the candidate oracle. Reopenable factories allow a later disk-backed score stream without loading all scored pairs into a DataFrame. The default grid checks 0 through 1 in 0.05 steps, then 0.01 steps within 0.05 of the best coarse threshold. Equal macro scores choose the higher threshold. Input fingerprints must match between passes, and a result above the oracle fails. The compact report contains singleton, source recall, country slice, candidate distribution, and error counts. A 0.05 score margin splits retrieved but rejected links into provisional scoring/decision diagnostic buckets; it does not alter decisions.
+
+Run the invented-data H2 smoke comparison separately from the CLI:
+
+```powershell
+python src/tests/h2_fixture_run.py --work-dir ../../artifacts/h2-fixture
+```
+
+This writes a structured JSON report under the ignored `artifacts/h2-fixture/` directory. It fits LightGBM on 16 invented training S1 groups and compares its decisions with `rule_score` on the same five invented validation S1 groups and seven candidates. The experiment record is [docs/H2-EXPERIMENT.md](../../docs/H2-EXPERIMENT.md). **No threshold is selected for the challenge yet.** There is no production score cache or checkpoint until real candidate generation is available.
 
 ## H1 pair feature schema
 
@@ -59,13 +73,13 @@ Token Jaccard and containment use **sets** of already-normalized tokens. If eith
 
 `train_model(training_pairs, validation_pairs, TrainConfig)` checks the H0 split and fits only training pairs; validation pairs are checked for partition membership and never used to fit or tune. CPU LightGBM parameters are binary objective, 40 rounds by default, 7 leaves, 0.05 learning rate, minimum 2 rows per leaf, 2 threads, deterministic column-wise mode, and no row or feature subsampling. The model text file and JSON manifest are saved under the chosen ignored model directory. `load_model` checks feature version/order, library version, artifact path confinement, and SHA-256. `score_group` takes the reusable `LoadedModel` returned by `load_model` and explicit keyword-only normalization/index/candidate version values, checks compatibility, retrieves each record, and returns one probability per candidate in group order; missing records raise errors. It scores one group at a time, without building a corpus-wide DataFrame. The JSON manifest records model type/library/version/license, seed, feature version/names, normalization/index/candidate versions, fixed split, pair counts, negative policy, artifact path/checksum, timestamp, training parameters, and `rule_score_untuned: true`. It contains no threshold.
 
-For the bounded invented-data smoke run, from this package directory execute:
+For the bounded H1 invented-data smoke run, from this package directory execute:
 
 ```powershell
 python src/tests/h1_fixture_run.py --work-dir artifacts/h1-fixture
 ```
 
-The script selects the first 16 synthetic S1 IDs that pass `is_validation_s1`, adds one deliberately unretrieved synthetic truth ID, uses seed 73 and 2 negatives from the top 3 per S1, then writes model, manifest, and report under the ignored work directory. It reports runtime and peak Python allocations measured by `tracemalloc`; that figure excludes native LightGBM allocations. If optional `psutil` is installed on Windows, it also reports peak process working-set bytes. The fixture has no valid challenge metric. A real held-out macro F0.5 comparison awaits Suresh's evaluator and actual candidates. H2 threshold selection remains open.
+The script selects the first 16 synthetic S1 IDs that are outside `is_validation_s1`, adds one deliberately unretrieved synthetic truth ID, uses seed 73 and 2 negatives from the top 3 per S1, then writes model, manifest, and report under the ignored work directory. It reports runtime and peak Python allocations measured by `tracemalloc`; that figure excludes native LightGBM allocations. If optional `psutil` is installed on Windows, it also reports peak process working-set bytes. The fixture has no valid challenge metric. Suresh's evaluator is now merged; a real held-out macro F0.5 comparison awaits actual candidate generation. H2 threshold selection remains open.
 
 ## Suresh Workstream — Metrics & Output
 
