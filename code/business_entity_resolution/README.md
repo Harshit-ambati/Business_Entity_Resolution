@@ -43,7 +43,23 @@ python -m ber.cli validate --data-root student_resource/dataset --work-dir artif
 
 `python -m ber.cli --help` and per-command `--help` describe this interface. At H0, each stage accepts the flags, prints `Not implemented in H0`, and exits with status 3. Missing required flags exit nonzero with an argparse error. No stage creates artifacts or claims success yet.
 
-**Candidate retrieval, model training, threshold tuning, evaluation, full inference, and official output generation are not implemented in H0.** Thulasi owns TSV ingestion/normalization, Sabeena owns indexing/blocking, and Suresh owns metrics/output. Later Harshit PRs will add features, model, decisions, and orchestration against their reviewed interfaces.
+**Candidate retrieval, model training, threshold tuning, evaluation, full inference, and official output generation are owned by other teammates.** Thulasi delivers streaming TSV ingestion (`ber.data`), Unicode normalization (`ber.normalize`), and streaming data-quality validation (`ber.quality`). Sabeena owns indexing/blocking, and Suresh owns metrics/output. Later Harshit PRs will add features, model, decisions, and orchestration against their reviewed interfaces.
+
+## Data ingestion, normalization, and quality validation (Thulasi)
+
+- **Readers (`ber.data`):**
+  - `read_source(path, expected_prefix)` streams `Record` instances lazily with header and row validation.
+  - `read_truth(path)` streams `TruthRow` instances, validating S1 IDs, duplicate S1 rows, and matched candidate prefixes.
+- **Normalization (`ber.normalize`):**
+  - `normalize_record(record)` produces `NormalizedRecord` with normalized name/address views, ordered token tuples, and open-set `country_key`.
+  - `NORMALIZATION_VERSION = "1"`.
+  - Pure, deterministic, Unicode NFKC + casefold, ampersand as token `and`, preserving accents, numbers, legal suffixes, and non-Latin scripts (Devanagari, Telugu, CJK).
+- **Data Quality & Audit (`ber.quality`):**
+  - `validate_source_file`, `validate_truth_file` stream diagnostics without full-RAM overhead.
+  - `check_duplicate_ids_partitioned` performs memory-bounded disk hash partitioning to audit 10M+ IDs within 8 GB RAM.
+  - Run CLI audit: `python -m ber.quality --data-root <path> [--output <report.json>]`.
+  - See `docs/NORMALIZATION.md` for full contract specification.
+
 
 ## Fixed validation partition
 
