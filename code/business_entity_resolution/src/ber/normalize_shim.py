@@ -17,7 +17,7 @@ import unicodedata
 
 from .contracts import NormalizedRecord, Record
 
-NORMALIZATION_VERSION = "1"
+NORMALIZATION_VERSION = "1-shim"
 
 
 def _normalize_text(text: str) -> str:
@@ -27,14 +27,13 @@ def _normalize_text(text: str) -> str:
     text = unicodedata.normalize("NFKC", text)
     text = text.casefold()
     text = text.replace("&", " and ")
-    # Replace non-letter/non-digit characters with spaces
-    chars: list[str] = []
-    for ch in text:
-        category = unicodedata.category(ch)
-        if category[0] in ("L", "N"):  # Letter or Number
-            chars.append(ch)
-        else:
-            chars.append(" ")
+    # Replace non-letter/non-digit/non-mark characters with spaces.
+    # Preserves Letters (L), Numbers (N), and Combining Marks (M) to support
+    # Indic scripts (Telugu, Devanagari) and accented European characters correctly.
+    chars: list[str] = [
+        ch if unicodedata.category(ch)[0] in ("L", "N", "M") else " "
+        for ch in text
+    ]
     text = "".join(chars)
     # Collapse whitespace
     text = re.sub(r" +", " ", text).strip()

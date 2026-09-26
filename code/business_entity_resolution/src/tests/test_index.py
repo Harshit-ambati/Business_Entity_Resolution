@@ -15,10 +15,10 @@ from ber.index import (
     IndexConfig,
     IndexManifest,
     IndexStore,
+    NORMALIZATION_VERSION,
     build_index,
     open_index,
 )
-from ber.normalize_shim import NORMALIZATION_VERSION
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -288,3 +288,154 @@ class TestIndexConfig:
         assert config.name_token is True
         assert config.address is False
         assert config.max_candidates_per_s1 == 32
+
+
+# ---------------------------------------------------------------------------
+# Stale index and source validation
+# ---------------------------------------------------------------------------
+
+class TestStaleIndexValidation:
+
+    def test_detects_source_content_modified(self, tmp_path: Path) -> None:
+        """When an indexed source file content changes, open_index must refuse it."""
+        s2 = tmp_path / "source2.tsv"
+        s3 = tmp_path / "source3.tsv"
+        s2.write_text((FIXTURES / "source2.tsv").read_text(encoding="utf-8"), encoding="utf-8")
+        s3.write_text((FIXTURES / "source3.tsv").read_text(encoding="utf-8"), encoding="utf-8")
+
+        manifest = build_index(s2, s3, tmp_path / "work", IndexConfig())
+
+        # Modify source2 content without changing length (replace character)
+        content = s2.read_text(encoding="utf-8")
+        s2.write_text(content.replace("Blue", "Red_"), encoding="utf-8")
+
+        with pytest.raises(ValueError, match="Stale index: source file .* content changed"):
+            open_index(manifest)
+
+    def test_detects_source_size_modified(self, tmp_path: Path) -> None:
+        """When an indexed source file size changes, open_index must refuse it."""
+        s2 = tmp_path / "source2.tsv"
+        s3 = tmp_path / "source3.tsv"
+        s2.write_text((FIXTURES / "source2.tsv").read_text(encoding="utf-8"), encoding="utf-8")
+        s3.write_text((FIXTURES / "source3.tsv").read_text(encoding="utf-8"), encoding="utf-8")
+
+        manifest = build_index(s2, s3, tmp_path / "work", IndexConfig())
+
+        # Append row to source3
+        with s3.open("a", encoding="utf-8") as f:
+            f.write("S3-EXTRA\tExtra Business\t100 Main\tIndia\n")
+
+        with pytest.raises(ValueError, match="Stale index: source file .* size changed"):
+            open_index(manifest)
+
+    def test_detects_source_file_missing(self, tmp_path: Path) -> None:
+        """When an indexed source file is deleted, open_index raises FileNotFoundError."""
+        s2 = tmp_path / "source2.tsv"
+        s3 = tmp_path / "source3.tsv"
+        s2.write_text((FIXTURES / "source2.tsv").read_text(encoding="utf-8"), encoding="utf-8")
+        s3.write_text((FIXTURES / "source3.tsv").read_text(encoding="utf-8"), encoding="utf-8")
+
+        manifest = build_index(s2, s3, tmp_path / "work", IndexConfig())
+        s2.unlink()
+
+        with pytest.raises(FileNotFoundError, match="Stale index: indexed source file .* not found"):
+            open_index(manifest)
+
+    def test_open_index_expected_split_validation(self, tmp_path: Path) -> None:
+        """open_index rejects opening an index with the wrong expected split."""
+        manifest = build_index(
+            FIXTURES / "source2.tsv",
+            FIXTURES / "source3.tsv",
+            tmp_path,
+            IndexConfig(split="train"),
+        )
+        assert manifest.split == "train"
+
+        # Matching expected_split passes
+        store = open_index(manifest, expected_split="train")
+        assert store.total_records == 5
+
+        # Mismatched expected_split fails
+        with pytest.raises(ValueError, match="Index split mismatch"):
+            open_index(manifest, expected_split="test")
+
+    def test_build_index_mixed_splits_raises(self, tmp_path: Path) -> None:
+        """build_index refuses to index source files from conflicting splits."""
+        train_dir = tmp_path / "train"
+        test_dir = tmp_path / "test"
+        train_dir.mkdir()
+        test_dir.mkdir()
+
+        train_s2 = train_dir / "source2.tsv"
+        test_s3 = test_dir / "source3.tsv"
+        train_s2.write_text((FIXTURES / "source2.tsv").read_text(encoding="utf-8"), encoding="utf-8")
+        test_s3.write_text((FIXTURES / "source3.tsv").read_text(encoding="utf-8"), encoding="utf-8")
+
+        with pytest.raises(ValueError, match="Cannot build index with mixed source splits"):
+            build_index(train_s2, test_s3, tmp_path / "work", IndexConfig())
+
+    def test_disk_backed_records_db_created(self, tmp_path: Path) -> None:
+        """build_index creates records.db SQLite file and open_index reads from it."""
+        manifest = build_index(
+            FIXTURES / "source2.tsv",
+            FIXTURES / "source3.tsv",
+            tmp_path,
+            IndexConfig(),
+        )
+        db_path = tmp_path / "blocking" / "records.db"
+        assert db_path.exists()
+        assert db_path.stat().st_size > 0
+
+        # open_index reads via SQLite
+        store = open_index(manifest)
+        rec = store.get_record("S2-MATCH")
+        assert rec.raw.entity_id == "S2-MATCH"
+        assert rec.name_norm == "blue lantern bakery llc"
+        assert store.get_record("S3-FRANCE").country_key == "france"
+
+
+# ---------------------------------------------------------------------------
+# Normalization version and Unicode safety
+# ---------------------------------------------------------------------------
+
+class TestNormalizationVersionSafety:
+
+    def test_telugu_keys_preserve_combining_marks(self) -> None:
+        """Telugu vowel signs (Mc) and viramas (Mn) must survive normalization intact."""
+        from ber.contracts import Record
+        from ber.normalize_shim import normalize_record as shim_norm
+
+        raw = Record(
+            entity_id="S2-TELUGU",
+            business_name="భారత్ ఎలక్ట్రానిక్స్",
+            business_address="హైదరాబాద్ 500001",
+            country="India",
+        )
+        norm = shim_norm(raw)
+
+        # Must not be broken into disjoint consonants
+        assert norm.name_norm == "భారత్ ఎలక్ట్రానిక్స్"
+        assert norm.name_tokens == ("భారత్", "ఎలక్ట్రానిక్స్")
+        assert "హైదరాబాద్" in norm.address_tokens
+
+    def test_temporary_normalizer_version_label(self) -> None:
+        """Temporary normalizer shim exports '1-shim' so it cannot masquerade as canonical v1."""
+        from ber.normalize_shim import NORMALIZATION_VERSION as SHIM_VERSION
+        assert SHIM_VERSION == "1-shim"
+
+    def test_index_rejects_incompatible_normalizer_version(self, tmp_path: Path) -> None:
+        """An index built with '1-shim' cannot reopen under canonical '1' without rebuild."""
+        manifest = build_index(
+            FIXTURES / "source2.tsv",
+            FIXTURES / "source3.tsv",
+            tmp_path,
+            IndexConfig(),
+        )
+        # If manifest was built with "1-shim" and runtime has canonical "1":
+        tampered = IndexManifest(**{
+            **manifest.to_dict(),
+            "normalization_version": "1",  # simulate runtime expecting "1" while index had "1-shim"
+        })
+        if NORMALIZATION_VERSION == "1-shim":
+            with pytest.raises(ValueError, match="Normalization version mismatch"):
+                open_index(tampered)

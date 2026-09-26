@@ -39,7 +39,7 @@ try:
 except ImportError:
     from .data_shim import read_source
 
-from .index import IndexConfig, IndexStore
+from .index import IndexConfig, IndexStore, detect_split
 
 # BlockingConfig is an alias for IndexConfig to provide symmetrical configuration naming
 BlockingConfig = IndexConfig
@@ -252,6 +252,16 @@ def iter_candidates(
         config = IndexConfig()
     elif isinstance(config, dict):
         config = IndexConfig.from_dict(config)
+
+    # Validate split consistency
+    s1_split = detect_split(source1_path)
+    idx_split = index_store.manifest.split
+    if s1_split != "unspecified" and idx_split != "unspecified" and s1_split != idx_split:
+        raise ValueError(
+            f"Split mismatch: source1 ({source1_path}) belongs to split {s1_split!r}, "
+            f"but candidate index was built for split {idx_split!r}. "
+            f"Cross-split retrieval is prohibited."
+        )
 
     # -- Statistics accumulators ---------------------------------------------
     s1_count = 0

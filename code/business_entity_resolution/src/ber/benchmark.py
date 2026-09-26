@@ -59,6 +59,11 @@ def run_benchmark(
     results["total_records"] = manifest.record_count
     total_candidates_pool = manifest.record_count
 
+    blocking_dir = Path(manifest.work_dir)
+    disk_bytes = sum(f.stat().st_size for f in blocking_dir.glob("*") if f.is_file())
+    results["index_disk_size_bytes"] = disk_bytes
+    results["index_disk_size_mb"] = disk_bytes / (1024 * 1024)
+
     # 2. Candidate Retrieval Benchmark
     index_store = open_index(manifest)
 
@@ -139,6 +144,7 @@ def print_report(results: dict[str, Any]) -> None:
     print("-" * 60)
     print(f"Index Build Time:         {results.get('index_time_sec', 0.0):.4f}s")
     print(f"Index Peak Memory:        {results.get('index_peak_mem_mb', 0.0):.2f} MB")
+    print(f"Index Disk Footprint:     {results.get('index_disk_size_mb', 0.0):.2f} MB")
     print(f"Retrieval Time:           {results.get('retrieval_time_sec', 0.0):.4f}s")
     print(f"Retrieval Peak Memory:    {results.get('retrieval_peak_mem_mb', 0.0):.2f} MB")
     print("-" * 60)

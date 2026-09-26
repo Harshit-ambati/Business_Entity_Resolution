@@ -350,3 +350,22 @@ class TestBenchmarkHelper:
         assert results["complete_link_coverage"] == 1.0
         assert results["reduction_ratio"] > 0.0
 
+    def test_iter_candidates_split_mismatch_raises(self, tmp_path: Path) -> None:
+        """iter_candidates raises ValueError when query S1 split mismatches index split."""
+        # Create an index with split="train"
+        manifest = build_index(
+            FIXTURES / "source2.tsv",
+            FIXTURES / "source3.tsv",
+            tmp_path / "train_work",
+            IndexConfig(split="train"),
+        )
+        store = open_index(manifest)
+
+        # Create a query file under a test/ folder
+        test_dir = tmp_path / "test"
+        test_dir.mkdir()
+        test_s1 = test_dir / "source1.tsv"
+        test_s1.write_text((FIXTURES / "source1.tsv").read_text(encoding="utf-8"), encoding="utf-8")
+
+        with pytest.raises(ValueError, match="Split mismatch"):
+            list(iter_candidates(test_s1, store))
