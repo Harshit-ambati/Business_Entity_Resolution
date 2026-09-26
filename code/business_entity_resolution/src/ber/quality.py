@@ -444,6 +444,40 @@ def check_duplicate_ids_partitioned(
     return duplicates
 
 
+# Files that must exist when they are present in the archive baseline.
+# Any name in this set that cannot be found (directly or in a sub-directory)
+# raises FileNotFoundError so the command exits non-zero.
+_REQUIRED_CHALLENGE_FILES: frozenset[str] = frozenset({
+    "train_source1.tsv",
+    "train_source2.tsv",
+    "train_source3.tsv",
+    "train_ground_truth.tsv",
+    "test_source1.tsv",
+    "test_source2.tsv",
+    "test_source3.tsv",
+})
+
+# Alternative flat-layout names accepted when the canonical names are absent.
+# These are *never* required; they exist only for developer convenience.
+_OPTIONAL_ALT_FILES: dict[str, tuple[str | None, str]] = {
+    "source1.tsv": ("S1-", "source"),
+    "source2.tsv": ("S2-", "source"),
+    "source3.tsv": ("S3-", "source"),
+    "truth.tsv": (None, "truth"),
+}
+
+_ALL_DATASET_FILES: dict[str, tuple[str | None, str]] = {
+    "train_source1.tsv": ("S1-", "source"),
+    "train_source2.tsv": ("S2-", "source"),
+    "train_source3.tsv": ("S3-", "source"),
+    "train_ground_truth.tsv": (None, "truth"),
+    "test_source1.tsv": ("S1-", "source"),
+    "test_source2.tsv": ("S2-", "source"),
+    "test_source3.tsv": ("S3-", "source"),
+    **_OPTIONAL_ALT_FILES,
+}
+
+
 def audit_dataset(
     data_root: str | Path,
     *,
@@ -453,24 +487,21 @@ def audit_dataset(
 
     Reports row counts, country distributions, missingness, truth link distributions,
     file sizes, and execution time.
+
+    Duplicate-ID checks use disk-partitioned hashing (``check_duplicate_ids_partitioned``)
+    so that auditing 10–24 million records stays within the 8 GB RAM budget.  The result
+    records ``duplicate_check_method: "partitioned_disk"`` for every source file so the
+    caller can verify which checker was used.
+
+    Raises
+    ------
+    FileNotFoundError
+        If any required challenge file (train/test source and truth TSVs) cannot be
+        located directly under *data_root* or in any of its sub-directories.  Missing
+        challenge files must never produce a silent exit-0 with an empty ``"files"`` map.
     """
     root = Path(data_root)
     start_time = time.perf_counter()
-
-    expected_files = {
-        "train_source1.tsv": ("S1-", "source"),
-        "train_source2.tsv": ("S2-", "source"),
-        "train_source3.tsv": ("S3-", "source"),
-        "train_ground_truth.tsv": (None, "truth"),
-        "test_source1.tsv": ("S1-", "source"),
-        "test_source2.tsv": ("S2-", "source"),
-        "test_source3.tsv": ("S3-", "source"),
-        "source1.tsv": ("S1-", "source"),
-        "source2.tsv": ("S2-", "source"),
-        "source3.tsv": ("S3-", "source"),
-        "truth.tsv": (None, "truth"),
-    }
-
 
     results: dict[str, Any] = {
         "data_root": str(root),
@@ -478,18 +509,32 @@ def audit_dataset(
         "files": {},
     }
 
-    for filename, (prefix, ftype) in expected_files.items():
+    for filename, (prefix, ftype) in _ALL_DATASET_FILES.items():
+        # Resolve the file path, searching sub-directories as a fallback.
         file_path = root / filename
         if not file_path.exists():
-            # Check nested subdirectories, e.g. root / "train" / filename or root / "test" / filename
             candidates = list(root.glob(f"**/{filename}"))
             if candidates:
                 file_path = candidates[0]
+            elif filename in _REQUIRED_CHALLENGE_FILES:
+                # Required challenge file is missing — this is a hard error.
+                raise FileNotFoundError(
+                    f"Required challenge file not found: {filename!r} "
+                    f"(searched under {root}).  "
+                    "Ensure the organizer archive is extracted to --data-root."
+                )
             else:
+                # Optional alternate-layout file; skip silently.
                 continue
 
         if ftype == "source" and prefix is not None:
-            rep = validate_source_file(file_path, prefix, check_duplicates=True)
+            # Basic streaming validation (no in-memory duplicate set for large files).
+            rep = validate_source_file(file_path, prefix, check_duplicates=False)
+
+            # Duplicate-ID check via memory-bounded disk partitioning (fix for issue 2).
+            # This is the only method that stays within 8 GB for 10–24 M rows.
+            duplicate_ids = check_duplicate_ids_partitioned(file_path, id_column=0)
+
             results["files"][filename] = {
                 "path": str(file_path),
                 "size_bytes": rep.file_size_bytes,
@@ -501,7 +546,10 @@ def audit_dataset(
                 "missing_countries": rep.missing_countries,
                 "countries": rep.country_counts,
                 "scripts": rep.script_counts,
-                "is_valid": rep.is_valid,
+                "duplicate_check_method": "partitioned_disk",
+                "duplicate_ids_found": len(duplicate_ids),
+                "duplicate_id_sample": duplicate_ids[:20],
+                "is_valid": rep.is_valid and len(duplicate_ids) == 0,
             }
         elif ftype == "truth":
             rep_truth = validate_truth_file(file_path, check_duplicates=True)

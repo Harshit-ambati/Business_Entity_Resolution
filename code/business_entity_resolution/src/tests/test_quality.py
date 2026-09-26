@@ -98,7 +98,7 @@ def test_check_duplicate_ids_partitioned(tmp_path):
 
 def test_audit_dataset_on_fixtures(tmp_path):
     """Test audit_dataset summarizes files in a directory."""
-    # Copy fixtures into a mock dataset directory structure
+    # Copy fixtures into a mock dataset directory structure matching canonical names.
     for name in ("source1.tsv", "source2.tsv", "source3.tsv", "truth.tsv"):
         content = (FIXTURES / name).read_bytes()
         dest_name = (
@@ -108,6 +108,13 @@ def test_audit_dataset_on_fixtures(tmp_path):
             else "train_ground_truth.tsv"
         )
         (tmp_path / dest_name).write_bytes(content)
+    # Also create the test split files so all required challenge files exist.
+    for test_name, src_name in (
+        ("test_source1.tsv", "source1.tsv"),
+        ("test_source2.tsv", "source2.tsv"),
+        ("test_source3.tsv", "source3.tsv"),
+    ):
+        (tmp_path / test_name).write_bytes((FIXTURES / src_name).read_bytes())
 
     out_json = tmp_path / "audit_report.json"
     audit_res = audit_dataset(tmp_path, output_path=out_json)
@@ -117,6 +124,33 @@ def test_audit_dataset_on_fixtures(tmp_path):
     assert audit_res["files"]["train_source1.tsv"]["total_rows"] == 4
     assert audit_res["files"]["train_ground_truth.tsv"]["singleton_rows"] == 1
     assert out_json.exists()
+
+    # Issue 2 regression: confirm the disk-partitioned checker was used, not an in-memory set.
+    src1_result = audit_res["files"]["train_source1.tsv"]
+    assert src1_result["duplicate_check_method"] == "partitioned_disk", (
+        "audit_dataset must use check_duplicate_ids_partitioned, not an in-memory set"
+    )
+    assert "duplicate_ids_found" in src1_result
+    assert src1_result["duplicate_ids_found"] == 0
+
+
+def test_audit_missing_required_challenge_file(tmp_path):
+    """Issue 1 regression: audit_dataset must raise FileNotFoundError (not exit 0 silently)
+    when a required challenge file is absent from the data root."""
+    # Empty directory — no challenge files at all.
+    import pytest
+    with pytest.raises(FileNotFoundError, match="Required challenge file not found"):
+        audit_dataset(tmp_path)
+
+
+def test_audit_partial_missing_required_file(tmp_path):
+    """Providing some but not all required challenge files must still raise FileNotFoundError."""
+    import pytest
+    # Only put one required file; the rest are missing.
+    content = (FIXTURES / "source1.tsv").read_bytes()
+    (tmp_path / "train_source1.tsv").write_bytes(content)
+    with pytest.raises(FileNotFoundError, match="Required challenge file not found"):
+        audit_dataset(tmp_path)
 
 
 def test_streaming_memory_efficiency(tmp_path):

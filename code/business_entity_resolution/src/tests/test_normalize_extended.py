@@ -370,20 +370,36 @@ def test_audit_cli_runs_on_fixture_dir(tmp_path):
     """python -m ber.audit --data-root <dir> must produce valid JSON output."""
     import json
 
-    # Copy a fixture into expected audit filenames
-    src = FIXTURES / "source1.tsv"
-    (tmp_path / "train_source1.tsv").write_bytes(src.read_bytes())
+    # Supply all seven required challenge files so the new missing-file guard
+    # does not fire.  Using fixture TSVs for both train and test splits is fine
+    # for a CLI smoke test; the important thing is that canonical names exist.
+    src1 = FIXTURES / "source1.tsv"
+    src2 = FIXTURES / "source2.tsv"
+    src3 = FIXTURES / "source3.tsv"
+    truth = FIXTURES / "truth.tsv"
+    for dest_name, src_path in (
+        ("train_source1.tsv", src1),
+        ("train_source2.tsv", src2),
+        ("train_source3.tsv", src3),
+        ("train_ground_truth.tsv", truth),
+        ("test_source1.tsv", src1),
+        ("test_source2.tsv", src2),
+        ("test_source3.tsv", src3),
+    ):
+        (tmp_path / dest_name).write_bytes(src_path.read_bytes())
 
     result = subprocess.run(
         [sys.executable, "-m", "ber.audit", "--data-root", str(tmp_path)],
         capture_output=True,
         text=True,
     )
-    assert result.returncode == 0
+    assert result.returncode == 0, f"stderr: {result.stderr}"
     data = json.loads(result.stdout)
     assert "files" in data
     assert "train_source1.tsv" in data["files"]
     assert data["files"]["train_source1.tsv"]["total_rows"] == 4
+    # Confirm disk-partitioned duplicate checker is recorded in the output.
+    assert data["files"]["train_source1.tsv"]["duplicate_check_method"] == "partitioned_disk"
 
 
 # ---------------------------------------------------------------------------

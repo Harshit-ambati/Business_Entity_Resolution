@@ -18,7 +18,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--output", type=Path, default=None, help="Optional output JSON path for the report")
     args = parser.parse_args(argv)
 
-    report = audit_dataset(args.data_root, output_path=args.output)
+    try:
+        report = audit_dataset(args.data_root, output_path=args.output)
+    except FileNotFoundError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 1
+
     print(json.dumps(report, indent=2, ensure_ascii=False))
     return 0
 
