@@ -55,14 +55,37 @@ def compute_file_fingerprint(path: Path | str, chunk_size: int = 65536) -> str:
 def detect_split(path: Path | str) -> str:
     """Infer the dataset split ('train', 'test', or 'fixture') from a file path."""
     p = Path(path)
-    parts = [part.lower() for part in p.parts]
-    for part in parts:
+    parent_parts = [part.lower() for part in p.parts[:-1]]
+
+    # 1. Any fixture directory anywhere in path takes precedence
+    if any(part in ("fixture", "fixtures") for part in parent_parts):
+        return "fixture"
+
+    # 2. Dataset split directories (strict names: 'test', 'train'; exclude general 'tests' dir)
+    for part in reversed(parent_parts):
         if part in ("test",):
             return "test"
-        if part in ("train",):
+        if part in ("train", "training"):
             return "train"
-        if part in ("fixture", "fixtures"):
-            return "fixture"
+
+    # 3. Check filename and stem (for flat files e.g. test_source2.tsv, train_source2.tsv)
+    stem = p.stem.lower()
+    if stem.startswith("test_source") or stem == "test" or stem.startswith("test_") or stem.endswith("_test"):
+        return "test"
+    if stem.startswith("train_source") or stem == "train" or stem.startswith("train_") or stem.endswith("_train"):
+        return "train"
+    if stem.startswith("fixture_") or stem == "fixture" or stem.endswith("_fixture") or "fixture" in stem:
+        return "fixture"
+
+    # 4. Check final part if no parent matched
+    last_part = p.parts[-1].lower() if p.parts else ""
+    if last_part in ("test",):
+        return "test"
+    if last_part in ("train",):
+        return "train"
+    if last_part in ("fixture", "fixtures"):
+        return "fixture"
+
     return "unspecified"
 
 

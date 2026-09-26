@@ -17,6 +17,7 @@ from ber.index import (
     IndexStore,
     NORMALIZATION_VERSION,
     build_index,
+    detect_split,
     open_index,
 )
 
@@ -375,6 +376,29 @@ class TestStaleIndexValidation:
                 tmp_path,
                 IndexConfig(split="train"),
             )
+
+    def test_flat_test_source_detected_as_test_split(self, tmp_path: Path) -> None:
+        """Flat test_source*.tsv files without a parent 'test' dir are detected as 'test' split."""
+        s2 = tmp_path / "test_source2.tsv"
+        s3 = tmp_path / "test_source3.tsv"
+        s2.write_text((FIXTURES / "source2.tsv").read_text(encoding="utf-8"), encoding="utf-8")
+        s3.write_text((FIXTURES / "source3.tsv").read_text(encoding="utf-8"), encoding="utf-8")
+
+        assert detect_split(s2) == "test"
+        assert detect_split(s3) == "test"
+
+        manifest = build_index(s2, s3, tmp_path / "work")
+        assert manifest.split == "test"
+
+    def test_flat_test_source_cannot_be_labeled_as_train_index(self, tmp_path: Path) -> None:
+        """Flat test_source*.tsv files cannot be overridden to build a 'train' index."""
+        s2 = tmp_path / "test_source2.tsv"
+        s3 = tmp_path / "test_source3.tsv"
+        s2.write_text((FIXTURES / "source2.tsv").read_text(encoding="utf-8"), encoding="utf-8")
+        s3.write_text((FIXTURES / "source3.tsv").read_text(encoding="utf-8"), encoding="utf-8")
+
+        with pytest.raises(ValueError, match="Cannot override detected split 'test' with conflicting config.split 'train'"):
+            build_index(s2, s3, tmp_path / "work", IndexConfig(split="train"))
 
     def test_open_index_missing_sqlite_store_raises(self, tmp_path: Path) -> None:
         """open_index rejects opening an index whose SQLite records.db is missing."""
