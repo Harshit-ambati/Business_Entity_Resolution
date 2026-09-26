@@ -12,7 +12,7 @@ All Python source, including tests, is under `src/`. `src/ber/contracts.py` defi
 ```powershell
 python -m pip install -r requirements.txt
 python -m pip install -e .
-python -m pytest
+python -m pytest -q
 ```
 
 The editable install makes `import ber` and `python -m ber.cli` work from any working directory in that environment. H1 pins LightGBM 4.7.0 (MIT); it brings NumPy/SciPy. LightGBM's [PyPI release](https://pypi.org/project/lightgbm/4.7.0/) provides a Windows wheel and lists Python 3.14. The fixtures in `src/tests/fixtures/` and `src/tests/test_h1.py` use invented businesses and run without challenge data. They cover multiple links, hard negatives, a singleton, France, Japanese text, and missing addresses. Tests establish behavior, not competition quality.
@@ -66,6 +66,18 @@ python src/tests/h1_fixture_run.py --work-dir artifacts/h1-fixture
 ```
 
 The script selects the first 16 synthetic S1 IDs that pass `is_validation_s1`, adds one deliberately unretrieved synthetic truth ID, uses seed 73 and 2 negatives from the top 3 per S1, then writes model, manifest, and report under the ignored work directory. It reports runtime and peak Python allocations measured by `tracemalloc`; that figure excludes native LightGBM allocations. If optional `psutil` is installed on Windows, it also reports peak process working-set bytes. The fixture has no valid challenge metric. A real held-out macro F0.5 comparison awaits Suresh's evaluator and actual candidates. H2 threshold selection remains open.
+
+## Suresh Workstream — Metrics & Output
+
+Suresh implements `ber.metrics` and `ber.output` according to `docs/CONTRACTS.md` and `docs/04-SURESH.md`:
+- Official Macro $F_{0.5}$ evaluation with empty match handling and edge-level recall (`ber.metrics.evaluate`).
+- Candidate retrieval diagnostics and oracle ceiling calculation (`ber.metrics.evaluate_candidates`).
+- Prediction error analysis breakdown (`ber.metrics.error_analysis`).
+- Output TSV generation preserving exact $S_1$ order, strict ID validation, and atomic writes (`ber.output.write_outputs`).
+- Preflight validator enforcing submission formatting, candidate file requirements, and ID integrity (`ber.output.validate_outputs`).
+- Organizer validator runner wrapper (`ber.output.run_organizer_validator`).
+
+Full evaluation documentation and verification results are in [docs/SURESH-EVALUATION.md](../../docs/SURESH-EVALUATION.md).
 
 ## Fixed validation partition
 
