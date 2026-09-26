@@ -201,25 +201,31 @@ python src/tests/suresh_memory_benchmark.py
 4. **Memory Measurement & Scope:**
    - Peak process memory is tracked per stage using `psutil.Process().memory_info().peak_wset` (on Windows) or `resource.getrusage().ru_maxrss * 1024` (on POSIX), along with stage-end RSS.
    - Python heap memory is tracked per stage via `tracemalloc.get_traced_memory()`.
-   - The benchmark's 8 GB budget pass condition tests `max_peak_process_bytes < 8 GiB`.
-   - **Scope Qualification:** The measured 1.63 GB peak process working set (1.39 GB Python traced) applies strictly to Suresh's output writer and evaluation components under 1.73M volume. It does *not* cover memory consumption for upstream candidate retrieval (Sabeena) or model feature extraction/inference (Harshit).
+   - The benchmark's 8 GB budget pass condition tests `max_peak_process_bytes < 8 GiB`. If process peak cannot be measured, the benchmark explicitly reports UNKNOWN and exits non-zero rather than silently passing.
+   - **Scope Qualification:** The measured peak process memory applies strictly to Suresh's output writer and evaluation components under 1.73M volume. It does *not* cover memory consumption for upstream candidate retrieval (Sabeena) or model feature extraction/inference (Harshit).
+   - **Historical note:** The approximate per-stage numbers below (200 MB – 1.63 GB) were recorded from code that used post-stage RSS on Linux, not true peak RSS. A rerun with the corrected `get_process_peak_bytes()` (which uses `ru_maxrss` on POSIX) is needed to produce verified peak measurements.
 
-### Measured Performance on 1,732,544 S1 Entities
+### Historical Performance on 1,732,544 S1 Entities (Stage-End RSS Estimates)
 
-| Pipeline Stage | Evaluated Entities | Runtime | Peak Python Memory (traced) | Peak Process Memory (Working Set) | Status / Result |
+> **⚠️ These values are historical stage-end RSS approximations**, not verified peak process memory.
+> The code that produced these numbers used `psutil.memory_info().rss` (current, not peak) on Linux.
+> A rerun with the corrected peak-tracking code (`resource.getrusage().ru_maxrss` on POSIX) is required
+> to produce verified peak measurements.
+
+| Pipeline Stage | Evaluated Entities | Runtime | Peak Python Memory (traced) | Process Memory (est. stage-end RSS) | Status / Result |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| `write_outputs()` | 1,732,544 test S1 | 100.65 s | 169.81 MB | ~200 MB | **PASS** (1.73M rows written) |
-| `validate_outputs()` | 1,732,544 test S1 | 80.79 s | 817.60 MB | ~950 MB | **PASS** (0 errors, 259,452 France rows verified) |
-| Organizer `validate_submission.py` | 1,732,544 test S1 | 15.20 s | < 100 MB | ~150 MB | **PASS** (format check only, exit code 0) |
-| `evaluate_candidates()` | 1,732,544 synthetic S1 | 63.33 s | 858.17 MB | ~1.10 GB | **PASS** (synthetic oracle F0.5 = 1.000) |
-| `evaluate()` | 1,732,544 synthetic S1 | 155.23 s | 1,394.32 MB | ~1.63 GB | **PASS** (synthetic singleton acc = 1.000) |
+| `write_outputs()` | 1,732,544 test S1 | 100.65 s | 169.81 MB | ~200 MB (est.) | **PASS** (1.73M rows written) |
+| `validate_outputs()` | 1,732,544 test S1 | 80.79 s | 817.60 MB | ~950 MB (est.) | **PASS** (0 errors, 259,452 France rows verified) |
+| Organizer `validate_submission.py` | 1,732,544 test S1 | 15.20 s | < 100 MB | ~150 MB (est.) | **PASS** (format check only, exit code 0) |
+| `evaluate_candidates()` | 1,732,544 synthetic S1 | 63.33 s | 858.17 MB | ~1.10 GB (est.) | **PASS** (synthetic oracle F0.5 = 1.000) |
+| `evaluate()` | 1,732,544 synthetic S1 | 155.23 s | 1,394.32 MB | ~1.63 GB (est.) | **PASS** (synthetic singleton acc = 1.000) |
 
 > ⚠️ **Summary Disclaimers:**
 > 1. **Organizer Validator Checks Format, Not Quality:** Line 9 of `utils/validate_submission.py` states it has no ground truth and never computes a match score. Exit code 0 confirms format and row coverage only.
 > 2. **Evaluation Metrics from Synthetic Stream Only:** The challenge test set has no ground truth labels. Stage 4 metrics are synthetic scaling benchmarks, not model performance.
-> 3. **Memory Scope:** The 1.63 GB peak process working set reflects Suresh's writer and evaluator components only, not the full candidate retrieval and model pipeline.
+> 3. **Memory Scope:** The stage-end RSS estimates (~1.63 GB largest) reflect Suresh's writer and evaluator components only, not the full candidate retrieval and model pipeline. True peak may differ from stage-end RSS.
 
-**8 GB Machine Target:** Max peak process memory across all stages of the writer/evaluator benchmark is **1.63 GB process working set** (1.39 GB Python traced), well within the 8 GB RAM laptop budget (< 25% of budget).
+**8 GB Machine Target:** Historical estimated stage-end RSS across all stages of the writer/evaluator benchmark is **~1.63 GB** (1.39 GB Python traced). A verified peak measurement from the corrected code is pending.
 
 
 ## Continuous Integration (CI) Workflow
@@ -249,7 +255,8 @@ All results are structured dataclasses (`EvaluationResult`, `CandidateResult`, `
 - [x] Preflight validator (`validate_outputs()`) verified on 1.73M rows (100% S1 row coverage, French S1 coverage, duplicate detection, UTF-8 TSV compliance)
 - [x] Organizer validator integration (`run_organizer_validator`) verified (reports exact output and exit code; explicitly flagged as format check only)
 - [x] Candidate & metric streaming evaluators (`evaluate_candidates()`, `evaluate()`) verified at full 1.73M volume with synthetic stream
-- [x] Per-stage process memory tracking implemented; peak process working set (1.63 GB) < 8 GB limit for writer/evaluator
+- [x] Per-stage process memory tracking implemented with corrected peak measurement (`ru_maxrss` on POSIX, `peak_wset` on Windows); budget failure and unavailable measurement both exit non-zero
+- [ ] Verified peak process memory from corrected code on a full 1.73M rerun (historical ~1.63 GB was stage-end RSS, not verified peak)
 - [x] Dataset-free CI workflow active (`.github/workflows/pr-checks.yml`) and passing (121 tests)
 
 ### Final Release Gate (Pending — To be executed with Harshit upon real model inference)

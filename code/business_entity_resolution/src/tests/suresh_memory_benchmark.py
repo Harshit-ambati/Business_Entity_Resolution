@@ -58,19 +58,30 @@ def find_repo_root() -> Path:
 
 
 def get_process_peak_bytes() -> int | None:
-    """Return peak process memory in bytes across supported platforms."""
-    if psutil is not None:
+    """Return peak process memory in bytes across supported platforms.
+
+    On Windows, uses ``psutil.Process().memory_info().peak_wset``.
+    On POSIX (Linux/macOS), uses ``resource.getrusage().ru_maxrss`` which
+    gives true peak RSS, even when psutil is installed (psutil's ``rss``
+    field is current, not peak).
+    """
+    if sys.platform == "win32" and psutil is not None:
         info = psutil.Process(os.getpid()).memory_info()
         peak = getattr(info, "peak_wset", None)
         if peak is not None:
             return peak
-        return getattr(info, "rss", None)
+    # POSIX: resource.getrusage gives true peak RSS (ru_maxrss)
     try:
         import resource
         ru = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+        # Linux reports in KB, macOS in bytes
         return ru * 1024 if sys.platform != "darwin" else ru
     except (ImportError, AttributeError):
-        return None
+        pass
+    # Last resort: psutil RSS (current, NOT peak) — caller should be aware
+    if psutil is not None:
+        return psutil.Process(os.getpid()).memory_info().rss
+    return None
 
 
 def get_process_current_rss() -> int | None:
@@ -383,10 +394,15 @@ def main() -> int:
     max_peak_process = max(process_peaks) if process_peaks else None
 
     # Budget verification against 8 GB constraint
+    # Only process-level peak memory counts; tracemalloc alone cannot prove
+    # the process stays under 8 GB because it excludes C-level allocations,
+    # memory-mapped files, and interpreter overhead.
+    EIGHT_GB = 8 * 1024 * 1024 * 1024
     if max_peak_process is not None:
-        budget_compliant = max_peak_process < (8 * 1024 * 1024 * 1024)
+        budget_compliant: bool | None = max_peak_process < EIGHT_GB
     else:
-        budget_compliant = max_peak_traced < (4 * 1024 * 1024 * 1024)
+        # Process peak unavailable — cannot verify the 8 GB claim
+        budget_compliant = None
 
     report["max_peak_traced_bytes"] = max_peak_traced
     report["max_peak_traced_mb"] = round(max_peak_traced / (1024 * 1024), 2)
@@ -404,9 +420,15 @@ def main() -> int:
     print("BENCHMARK SUMMARY & 8 GB MEMORY VERIFICATION")
     print("=" * 75)
     if report["max_peak_process_mb"]:
-        print(f"Max Peak Process Memory (Working Set):     {report['max_peak_process_mb']} MB")
+        print(f"Max Peak Process Memory:                   {report['max_peak_process_mb']} MB")
     print(f"Max Peak Python Traced Memory:             {report['max_peak_traced_mb']} MB")
-    print(f"8 GB Budget Compliance (Writer/Evaluator): {'PASS (well below 8 GB limit)' if report['8gb_budget_compliant'] else 'FAIL'}")
+    if budget_compliant is True:
+        budget_display = "PASS (well below 8 GB limit)"
+    elif budget_compliant is False:
+        budget_display = "FAIL (exceeded 8 GB process memory budget)"
+    else:
+        budget_display = "UNKNOWN (process peak memory unavailable; cannot verify 8 GB budget)"
+    print(f"8 GB Budget Compliance (Writer/Evaluator): {budget_display}")
     print(f"Preflight Output Validation:               {'PASS' if v_result.passed else 'FAIL'}")
     print(f"Organizer Submission Validator:            {organizer_status_display}")
     print("=" * 75)
@@ -419,6 +441,12 @@ def main() -> int:
     if organizer_exit is not None and organizer_exit != 0:
         return 1
     if args.require_organizer and organizer_exit is None:
+        return 1
+    if budget_compliant is False:
+        print("\nERROR: Process memory exceeded 8 GB budget.")
+        return 1
+    if budget_compliant is None:
+        print("\nWARNING: Process peak memory could not be measured; 8 GB budget unverified.")
         return 1
     return 0
 
