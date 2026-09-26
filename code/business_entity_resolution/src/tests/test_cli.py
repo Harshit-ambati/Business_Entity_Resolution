@@ -46,6 +46,8 @@ def test_stage_flags_and_clear_unimplemented_status(tmp_path, command):
     assert result.returncode != 0
     if command == "train":
         assert "H1 pair model API is ready" in result.stderr
+    elif command == "evaluate":
+        assert "H2 decision and evaluation APIs are ready" in result.stderr
     else:
         assert f"{command}: Not implemented in H0" in result.stderr
     assert not work.exists() and not output.exists()

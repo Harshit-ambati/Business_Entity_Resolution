@@ -1,4 +1,4 @@
-"""Stable command surface; H1 model API is awaiting teammate pipeline stages."""
+"""Stable command surface; batch stages await teammate pipeline modules."""
 
 from __future__ import annotations
 
@@ -25,6 +25,9 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     if args.command == "train":
         print("train: H1 pair model API is ready; dataset training awaits merged data, normalization, index and blocking modules", file=sys.stderr)
+        return 3
+    if args.command == "evaluate":
+        print("evaluate: H2 decision and evaluation APIs are ready; real holdout requires merged data, normalization, index and blocking modules", file=sys.stderr)
         return 3
     print(f"{args.command}: Not implemented in H0", file=sys.stderr)
     return 3
