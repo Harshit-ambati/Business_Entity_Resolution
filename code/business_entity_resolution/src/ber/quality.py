@@ -128,6 +128,8 @@ def validate_source_file(
     report = SourceQualityReport(file_path=str(file_path))
 
     if not file_path.exists():
+        # Fatal structural failure: count as a malformed file so is_valid → False.
+        report.malformed_rows += 1
         report.errors.append(
             QualityIssue(str(file_path), 0, "file_not_found", f"File does not exist: {file_path}")
         )
@@ -141,6 +143,8 @@ def validate_source_file(
         try:
             header = next(reader)
         except StopIteration:
+            # Fatal structural failure: empty file has no header → is_valid must be False.
+            report.malformed_rows += 1
             report.errors.append(
                 QualityIssue(str(file_path), 1, "empty_file", "File is empty")
             )
@@ -247,6 +251,8 @@ def validate_truth_file(
     report = TruthQualityReport(file_path=str(file_path))
 
     if not file_path.exists():
+        # Fatal structural failure: count as a malformed file so is_valid → False.
+        report.malformed_rows += 1
         report.errors.append(
             QualityIssue(str(file_path), 0, "file_not_found", f"File does not exist: {file_path}")
         )
@@ -260,6 +266,8 @@ def validate_truth_file(
         try:
             header = next(reader)
         except StopIteration:
+            # Fatal structural failure: empty file has no header → is_valid must be False.
+            report.malformed_rows += 1
             report.errors.append(
                 QualityIssue(str(file_path), 1, "empty_file", "File is empty")
             )

@@ -209,3 +209,66 @@ def test_audit_invalid_tsv_content_is_valid_false(tmp_path):
     assert not report["files"]["train_source1.tsv"]["is_valid"]
     # A clean file must still pass
     assert report["files"]["test_source1.tsv"]["is_valid"]
+
+
+def test_audit_empty_required_file_is_invalid(tmp_path):
+    """Regression: reviewer-reproduced case.
+
+    All seven required filenames present, but train_source1.tsv is completely
+    empty (zero bytes).  Before the fix, validate_source_file returned
+    malformed_rows=0 on the empty-file early-return path, so is_valid was True
+    and the audit CLI exited 0.  After the fix, is_valid must be False and the
+    CLI must exit 2.
+    """
+    good_source = (
+        "entity_id\tbusiness_name\tbusiness_address\tcountry\n"
+        "S1-001\tGood Corp\t1 Main St\tUS\n"
+    )
+    good_truth = (
+        "source1_entity_id\tmatched_entity_ids\n"
+        "S1-001\t\n"
+    )
+    good_s2 = (
+        "entity_id\tbusiness_name\tbusiness_address\tcountry\n"
+        "S2-001\tGood Corp\t1 Main St\tUS\n"
+    )
+    good_s3 = (
+        "entity_id\tbusiness_name\tbusiness_address\tcountry\n"
+        "S3-001\tGood Corp\t1 Main St\tUS\n"
+    )
+    files = {
+        "train_source1.tsv": "",       # EMPTY — the exact reviewer case
+        "train_source2.tsv": good_s2,
+        "train_source3.tsv": good_s3,
+        "train_ground_truth.tsv": good_truth,
+        "test_source1.tsv": good_source,
+        "test_source2.tsv": good_s2,
+        "test_source3.tsv": good_s3,
+    }
+    for name, content in files.items():
+        (tmp_path / name).write_text(content, encoding="utf-8")
+
+    # validate_source_file in isolation must also return is_valid=False
+    report_direct = validate_source_file(tmp_path / "train_source1.tsv", "S1-")
+    assert not report_direct.is_valid, (
+        "validate_source_file must return is_valid=False for an empty file"
+    )
+    assert any(e.issue_type == "empty_file" for e in report_direct.errors)
+
+    # audit_dataset must surface is_valid=False in the file entry
+    audit_report = audit_dataset(tmp_path, temp_dir=tmp_path)
+    assert not audit_report["files"]["train_source1.tsv"]["is_valid"], (
+        "audit_dataset must report is_valid=False when a required file is empty"
+    )
+    # Other clean files must still pass
+    assert audit_report["files"]["test_source1.tsv"]["is_valid"]
+
+
+def test_validate_source_file_not_found_is_invalid():
+    """file_not_found must also produce is_valid=False (not True)."""
+    report = validate_source_file("/nonexistent/path/source.tsv", "S1-")
+    assert not report.is_valid, (
+        "validate_source_file must return is_valid=False when the file does not exist"
+    )
+    assert any(e.issue_type == "file_not_found" for e in report.errors)
+
