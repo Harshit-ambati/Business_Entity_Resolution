@@ -1,7 +1,7 @@
 """Retrieval benchmark helper: measures index build, candidate retrieval, and candidate coverage.
 
 Usage:
-    python -m ber.benchmark [--sample] [--generate-scale N] [--fixtures] [--source1 PATH --source2 PATH --source3 PATH]
+    python -m ber.benchmark [--sample] [--sample-size N] [--sample-s1 N] [--generate-scale N] [--fixtures]
 
 Measures wall time, peak process RAM (Working Set / maxrss), Python heap allocations,
 candidate volume distribution, reduction ratio, disk footprint, and true-link recall.
@@ -10,6 +10,7 @@ candidate volume distribution, reduction ratio, disk footprint, and true-link re
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import statistics
 import sys
@@ -25,8 +26,8 @@ from .index import IndexConfig, build_index, open_index
 logger = logging.getLogger(__name__)
 
 
-def get_peak_process_memory_mb() -> float:
-    """Return peak process resident memory (Working Set on Windows, maxrss on POSIX) in MB."""
+def get_peak_process_memory_mb() -> float | None:
+    """Return peak process resident memory (Working Set on Windows, maxrss on POSIX) in MB, or None if unavailable."""
     if sys.platform == "win32":
         try:
             import ctypes
@@ -55,7 +56,9 @@ def get_peak_process_memory_mb() -> float:
             counters = PROCESS_MEMORY_COUNTERS()
             counters.cb = ctypes.sizeof(PROCESS_MEMORY_COUNTERS)
             if get_mem(kernel32.GetCurrentProcess(), ctypes.byref(counters), counters.cb):
-                return counters.PeakWorkingSetSize / (1024 * 1024)
+                mb = counters.PeakWorkingSetSize / (1024 * 1024)
+                if mb > 0:
+                    return mb
         except Exception:
             pass
     else:
@@ -64,17 +67,15 @@ def get_peak_process_memory_mb() -> float:
 
             rusage = resource.getrusage(resource.RUSAGE_SELF)
             if sys.platform == "darwin":
-                return rusage.ru_maxrss / (1024 * 1024)
-            return rusage.ru_maxrss / 1024
+                mb = rusage.ru_maxrss / (1024 * 1024)
+            else:
+                mb = rusage.ru_maxrss / 1024
+            if mb > 0:
+                return mb
         except Exception:
             pass
 
-    # Fallback to tracemalloc peak if OS memory query fails
-    try:
-        _, peak = tracemalloc.get_traced_memory()
-        return peak / (1024 * 1024)
-    except Exception:
-        return 0.0
+    return None
 
 
 def run_benchmark(
@@ -85,8 +86,12 @@ def run_benchmark(
     work_dir: Path | None = None,
     index_config: IndexConfig | None = None,
     blocking_config: IndexConfig | None = None,
+    expected_s1: int | None = None,
 ) -> dict[str, Any]:
-    """Run full candidate retrieval benchmark and return summary statistics."""
+    """Run full candidate retrieval benchmark and return summary statistics.
+
+    Rejects the run if expected_s1 is provided and fewer S1 queries are produced.
+    """
     if work_dir is None:
         work_dir = Path("artifacts/blocking_benchmark")
     work_dir.mkdir(parents=True, exist_ok=True)
@@ -174,6 +179,11 @@ def run_benchmark(
 
     index_store.close()
 
+    if expected_s1 is not None and num_s1 < expected_s1:
+        raise ValueError(
+            f"Benchmark produced {num_s1} S1 queries, fewer than requested {expected_s1}. Rejecting run."
+        )
+
     results["retrieval_time_sec"] = t_retrieval
     results["retrieval_peak_mem_mb"] = peak_retrieval_mem / (1024 * 1024)
     results["retrieval_peak_rss_mb"] = peak_retrieval_rss
@@ -200,29 +210,34 @@ def run_benchmark(
 
 def print_report(results: dict[str, Any]) -> None:
     """Pretty-print benchmark results."""
+    idx_rss = results.get("index_peak_rss_mb")
+    idx_rss_str = f"{idx_rss:.2f} MB" if idx_rss is not None else "unknown"
+    ret_rss = results.get("retrieval_peak_rss_mb")
+    ret_rss_str = f"{ret_rss:.2f} MB" if ret_rss is not None else "unknown"
+
     print("=" * 60)
     print("BUSINESS ENTITY RESOLUTION — RETRIEVAL BENCHMARK")
     print(f"Total Indexed Records:     {results.get('total_records', 0):,}")
     print(f"S1 Queries:                 {results.get('num_s1_queries', 0):,}")
     print("-" * 60)
     print(f"Index Build Time:           {results.get('index_time_sec', 0.0):.4f}s")
-    print(f"Index Peak Process RAM:     {results.get('index_peak_rss_mb', 0.0):.2f} MB")
+    print(f"Index Peak Process RAM:     {idx_rss_str}")
     print(f"Index Peak Python Heap:     {results.get('index_peak_mem_mb', 0.0):.2f} MB")
     print(f"Index Disk Footprint:       {results.get('index_disk_size_mb', 0.0):.2f} MB")
     print(f"Retrieval Time:             {results.get('retrieval_time_sec', 0.0):.4f}s")
-    print(f"Retrieval Peak Process RAM: {results.get('retrieval_peak_rss_mb', 0.0):.2f} MB")
+    print(f"Retrieval Peak Process RAM: {ret_rss_str}")
     print(f"Retrieval Peak Python Heap: {results.get('retrieval_peak_mem_mb', 0.0):.2f} MB")
     print("-" * 60)
     print(f"Total Candidate Pairs:      {results.get('total_candidate_pairs', 0):,}")
     print(f"Mean Candidates/S1:         {results.get('candidate_count_mean', 0.0):.2f}")
-    print(f"Median Candidates/S1:       {results.get('candidate_count_median', 0.1):.1f}")
+    print(f"Median Candidates/S1:       {results.get('candidate_count_median', 0.0):.1f}")
     print(f"Min / Max Candidates/S1:    {results.get('candidate_count_min', 0)} / {results.get('candidate_count_max', 0)}")
     print(f"Reduction Ratio:            {results.get('reduction_ratio', 0.0):.6f}")
 
     if "true_edge_recall" in results:
         print("-" * 60)
-        print(f"True Edge Recall:           {results['true_edge_recall'] * 100:.2f}% ({results['retrieved_true_edges']}/{results['total_true_edges']})")
-        print(f"Complete Link Coverage:     {results['complete_link_coverage'] * 100:.2f}%")
+        print(f"Sample True Edge Recall:    {results['true_edge_recall'] * 100:.2f}% ({results['retrieved_true_edges']}/{results['total_true_edges']}) [sample result, not full holdout]")
+        print(f"Sample Link Coverage:       {results['complete_link_coverage'] * 100:.2f}% [sample result, not full holdout]")
     print("=" * 60)
 
 
@@ -231,89 +246,165 @@ def extract_representative_sample(
     output_dir: Path,
     n_s2_s3: int = 50000,
     n_s1: int = 1000,
+    force: bool = False,
 ) -> tuple[Path, Path, Path, Path]:
-    """Extract a representative real challenge benchmark sample from student_resource.zip."""
+    """Extract a representative real challenge benchmark sample from student_resource.zip.
+
+    Ensures sample files depend on archive status and requested sizes, regenerating
+    them when sizes or archive change. Rejects runs where produced S1 queries < n_s1.
+    """
+    archive_path = Path(archive_path).resolve()
+    if not archive_path.exists():
+        raise FileNotFoundError(f"Archive not found: {archive_path}")
+
+    sample_dir = output_dir / f"sample_s2s3_{n_s2_s3}_s1_{n_s1}"
+    sample_dir.mkdir(parents=True, exist_ok=True)
+    meta_path = sample_dir / "sample_meta.json"
+
+    s1_path = sample_dir / "train_source1.tsv"
+    s2_path = sample_dir / "train_source2.tsv"
+    s3_path = sample_dir / "train_source3.tsv"
+    truth_path = sample_dir / "train_ground_truth.tsv"
+
+    archive_stat = archive_path.stat()
+    if (
+        not force
+        and meta_path.exists()
+        and s1_path.exists()
+        and s2_path.exists()
+        and s3_path.exists()
+        and truth_path.exists()
+    ):
+        try:
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+            if (
+                meta.get("requested_n_s2_s3") == n_s2_s3
+                and meta.get("requested_n_s1") == n_s1
+                and meta.get("actual_s1_count") == n_s1
+                and meta.get("archive_size") == archive_stat.st_size
+                and meta.get("archive_mtime") == archive_stat.st_mtime
+            ):
+                logger.info("Using cached sample at %s matching requested sizes", sample_dir)
+                return s1_path, s2_path, s3_path, truth_path
+        except Exception:
+            pass
+
+    logger.info("Extracting representative sample (S1=%d, S2/S3=%d) from %s...", n_s1, n_s2_s3, archive_path)
+    n_s2 = n_s2_s3 // 2
+    n_s3 = n_s2_s3 - n_s2
+
     import zipfile
 
-    output_dir.mkdir(parents=True, exist_ok=True)
-    s1_path = output_dir / "train_source1.tsv"
-    s2_path = output_dir / "train_source2.tsv"
-    s3_path = output_dir / "train_source3.tsv"
-    truth_path = output_dir / "train_ground_truth.tsv"
-
-    if s1_path.exists() and s2_path.exists() and s3_path.exists() and truth_path.exists():
-        return s1_path, s2_path, s3_path, truth_path
-
-    half_pool = max(100, n_s2_s3 // 2)
-
     with zipfile.ZipFile(archive_path) as z:
-        s2_ids: set[str] = set()
-        with z.open("student_resource/dataset/train/train_source2.tsv") as f_in, \
-             open(s2_path, "w", encoding="utf-8") as f_out:
-            header = f_in.readline().decode("utf-8")
-            f_out.write(header)
-            for _ in range(half_pool):
-                line = f_in.readline()
+        # 1. Read requested n_s1 from train_source1.tsv
+        s1_rows: list[str] = []
+        s1_ids: set[str] = set()
+        with z.open("student_resource/dataset/train/train_source1.tsv") as f:
+            header_s1 = f.readline().decode("utf-8")
+            for _ in range(n_s1):
+                line = f.readline()
                 if not line:
                     break
                 decoded = line.decode("utf-8")
-                s2_ids.add(decoded.split("\t")[0])
-                f_out.write(decoded)
+                s1_rows.append(decoded)
+                s1_ids.add(decoded.split("\t")[0])
 
-        s3_ids: set[str] = set()
-        with z.open("student_resource/dataset/train/train_source3.tsv") as f_in, \
-             open(s3_path, "w", encoding="utf-8") as f_out:
-            header = f_in.readline().decode("utf-8")
-            f_out.write(header)
-            for _ in range(half_pool):
-                line = f_in.readline()
-                if not line:
-                    break
+        if len(s1_rows) < n_s1:
+            raise ValueError(
+                f"Requested {n_s1} S1 queries, but only found {len(s1_rows)} in archive. Rejecting run."
+            )
+
+        # 2. Read truth for those s1_ids and record all true candidate IDs needed
+        truth_rows: list[str] = []
+        needed_s2: set[str] = set()
+        needed_s3: set[str] = set()
+        with z.open("student_resource/dataset/train/train_ground_truth.tsv") as f:
+            header_truth = f.readline().decode("utf-8")
+            for line in f:
                 decoded = line.decode("utf-8")
-                s3_ids.add(decoded.split("\t")[0])
-                f_out.write(decoded)
-
-        pool = s2_ids | s3_ids
-
-        target_s1: dict[str, list[str]] = {}
-        target_matched = max(10, int(n_s1 * 0.8))
-        target_singletons = max(5, n_s1 - target_matched)
-
-        with z.open("student_resource/dataset/train/train_ground_truth.tsv") as f_in:
-            header = f_in.readline().decode("utf-8")
-            for line in f_in:
-                parts = line.decode("utf-8").rstrip("\r\n").split("\t")
-                s1_id = parts[0]
-                matches = [m.strip() for m in parts[1].split(",") if m.strip()] if len(parts) > 1 else []
-                if matches and all(m in pool for m in matches):
-                    target_s1[s1_id] = matches
-                    if len([k for k, v in target_s1.items() if v]) >= target_matched:
+                parts = decoded.rstrip("\r\n").split("\t")
+                if parts[0] in s1_ids:
+                    truth_rows.append(decoded)
+                    matches = [m.strip() for m in parts[1].split(",") if m.strip()] if len(parts) > 1 else []
+                    for m in matches:
+                        if m.startswith("S2-"):
+                            needed_s2.add(m)
+                        elif m.startswith("S3-"):
+                            needed_s3.add(m)
+                    if len(truth_rows) == len(s1_ids):
                         break
-                elif not matches and len([k for k, v in target_s1.items() if not v]) < target_singletons:
-                    target_s1[s1_id] = []
 
-        with open(truth_path, "w", encoding="utf-8") as f_out:
-            f_out.write("source1_entity_id\tmatched_entity_ids\n")
-            for s1_id, matches in target_s1.items():
-                f_out.write(f"{s1_id}\t{','.join(matches)}\n")
-
-        s1_needed = set(target_s1.keys())
-        s1_found: dict[str, str] = {}
-        with z.open("student_resource/dataset/train/train_source1.tsv") as f_in:
-            header = f_in.readline().decode("utf-8")
-            for line in f_in:
+        # 3. Read train_source2.tsv for needed_s2 plus distractors up to n_s2
+        s2_matched: list[str] = []
+        found_needed_s2: set[str] = set()
+        distractors_s2: list[str] = []
+        with z.open("student_resource/dataset/train/train_source2.tsv") as f:
+            header_s2 = f.readline().decode("utf-8")
+            for line in f:
                 decoded = line.decode("utf-8")
                 sid = decoded.split("\t")[0]
-                if sid in s1_needed:
-                    s1_found[sid] = decoded
-                    if len(s1_found) == len(s1_needed):
-                        break
+                if sid in needed_s2:
+                    s2_matched.append(decoded)
+                    found_needed_s2.add(sid)
+                elif len(distractors_s2) < (n_s2 - len(needed_s2)):
+                    distractors_s2.append(decoded)
+                if len(found_needed_s2) == len(needed_s2) and len(distractors_s2) >= (n_s2 - len(needed_s2)):
+                    break
 
-        with open(s1_path, "w", encoding="utf-8") as f_out:
-            f_out.write(header)
-            for sid in target_s1:
-                if sid in s1_found:
-                    f_out.write(s1_found[sid])
+        all_s2 = s2_matched + distractors_s2
+
+        # 4. Read train_source3.tsv for needed_s3 plus distractors up to n_s3
+        s3_matched: list[str] = []
+        found_needed_s3: set[str] = set()
+        distractors_s3: list[str] = []
+        with z.open("student_resource/dataset/train/train_source3.tsv") as f:
+            header_s3 = f.readline().decode("utf-8")
+            for line in f:
+                decoded = line.decode("utf-8")
+                sid = decoded.split("\t")[0]
+                if sid in needed_s3:
+                    s3_matched.append(decoded)
+                    found_needed_s3.add(sid)
+                elif len(distractors_s3) < (n_s3 - len(needed_s3)):
+                    distractors_s3.append(decoded)
+                if len(found_needed_s3) == len(needed_s3) and len(distractors_s3) >= (n_s3 - len(needed_s3)):
+                    break
+
+        all_s3 = s3_matched + distractors_s3
+
+        # Write sample files
+        with open(s1_path, "w", encoding="utf-8") as f:
+            f.write(header_s1)
+            for row in s1_rows:
+                f.write(row)
+
+        with open(truth_path, "w", encoding="utf-8") as f:
+            f.write(header_truth)
+            for row in truth_rows:
+                f.write(row)
+
+        with open(s2_path, "w", encoding="utf-8") as f:
+            f.write(header_s2)
+            for row in all_s2:
+                f.write(row)
+
+        with open(s3_path, "w", encoding="utf-8") as f:
+            f.write(header_s3)
+            for row in all_s3:
+                f.write(row)
+
+        # Write metadata
+        meta = {
+            "archive_path": str(archive_path),
+            "archive_size": archive_stat.st_size,
+            "archive_mtime": archive_stat.st_mtime,
+            "requested_n_s2_s3": n_s2_s3,
+            "requested_n_s1": n_s1,
+            "actual_s1_count": len(s1_rows),
+            "actual_s2_count": len(all_s2),
+            "actual_s3_count": len(all_s3),
+        }
+        meta_path.write_text(json.dumps(meta, indent=2), encoding="utf-8")
 
     return s1_path, s2_path, s3_path, truth_path
 
@@ -374,11 +465,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--sample-archive", type=Path, default=None, help="Path to student_resource.zip archive")
     parser.add_argument("--sample-size", type=int, default=50000, help="Number of S2/S3 candidate records in sample (default: 50,000)")
     parser.add_argument("--sample-s1", type=int, default=1000, help="Number of S1 queries in sample (default: 1,000)")
+    parser.add_argument("--force-sample", action="store_true", help="Force re-extraction of sample files")
     parser.add_argument("--generate-scale", type=int, default=None, help="Generate and benchmark a large synthetic corpus of N records")
 
     args = parser.parse_args(argv)
     archive_path = find_archive(args.sample_archive)
     repo_root = archive_path.parent.parent if archive_path else Path.cwd().resolve()
+    expected_s1 = None
 
     if args.generate_scale:
         work_dir = args.work_dir or (repo_root / "artifacts" / "scale_blocking")
@@ -387,14 +480,16 @@ def main(argv: list[str] | None = None) -> int:
     elif args.sample or (not args.source1 and not args.source2 and not args.source3 and not args.fixtures and archive_path is not None):
         if archive_path is None:
             parser.error("Cannot run sample benchmark: student_resource.zip not found.")
-        work_dir = args.work_dir or (repo_root / "artifacts" / "blocking" / "sample_index")
-        sample_dir = repo_root / "artifacts" / "blocking" / "sample"
+        work_dir = args.work_dir or (repo_root / "artifacts" / "blocking" / f"sample_index_{args.sample_size}_{args.sample_s1}")
+        sample_dir = repo_root / "artifacts" / "blocking"
         s1, s2, s3, truth = extract_representative_sample(
             archive_path=archive_path,
             output_dir=sample_dir,
             n_s2_s3=args.sample_size,
             n_s1=args.sample_s1,
+            force=args.force_sample,
         )
+        expected_s1 = args.sample_s1
     elif args.fixtures or (not args.source1 and not args.source2 and not args.source3):
         fixture_dir = Path(__file__).resolve().parent.parent / "tests" / "fixtures"
         s1 = fixture_dir / "source1.tsv"
@@ -417,6 +512,7 @@ def main(argv: list[str] | None = None) -> int:
         source3_path=s3,
         truth_path=truth,
         work_dir=work_dir,
+        expected_s1=expected_s1,
     )
     print_report(results)
     return 0

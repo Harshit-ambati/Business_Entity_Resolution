@@ -371,3 +371,83 @@ class TestBenchmarkHelper:
 
         with pytest.raises(ValueError, match="Split mismatch"):
             list(iter_candidates(test_s1, store))
+
+    def test_run_benchmark_rejects_fewer_s1_than_expected(self, tmp_path: Path) -> None:
+        """run_benchmark rejects the run if fewer S1 queries are produced than expected_s1."""
+        from ber.benchmark import run_benchmark
+
+        with pytest.raises(ValueError, match="fewer than requested 10"):
+            run_benchmark(
+                source1_path=FIXTURES / "source1.tsv",
+                source2_path=FIXTURES / "source2.tsv",
+                source3_path=FIXTURES / "source3.tsv",
+                truth_path=FIXTURES / "truth.tsv",
+                work_dir=tmp_path / "bench_idx",
+                expected_s1=10,
+            )
+
+    def test_extract_representative_sample_resizes_and_regenerates(self, tmp_path: Path) -> None:
+        """extract_representative_sample regenerates files when sample sizes change and rejects undersized requests."""
+        import zipfile
+        from ber.benchmark import extract_representative_sample
+
+        # Create a mock student_resource.zip
+        zip_path = tmp_path / "student_resource.zip"
+        with zipfile.ZipFile(zip_path, "w") as z:
+            # 20 S1 rows
+            s1_lines = ["entity_id\tbusiness_name\tbusiness_address\tcountry\n"]
+            truth_lines = ["source1_entity_id\tmatched_entity_ids\n"]
+            for i in range(20):
+                s1_lines.append(f"S1-{i}\tCorp {i}\t{i} Main St\tUS\n")
+                truth_lines.append(f"S1-{i}\tS2-{i},S3-{i}\n")
+            z.writestr("student_resource/dataset/train/train_source1.tsv", "".join(s1_lines))
+            z.writestr("student_resource/dataset/train/train_ground_truth.tsv", "".join(truth_lines))
+
+            # 50 S2 rows
+            s2_lines = ["entity_id\tbusiness_name\tbusiness_address\tcountry\n"]
+            for i in range(50):
+                s2_lines.append(f"S2-{i}\tCorp {i} LLC\t{i} Main St\tUS\n")
+            z.writestr("student_resource/dataset/train/train_source2.tsv", "".join(s2_lines))
+
+            # 50 S3 rows
+            s3_lines = ["entity_id\tbusiness_name\tbusiness_address\tcountry\n"]
+            for i in range(50):
+                s3_lines.append(f"S3-{i}\tCorp {i} Inc\t{i} Main St Suite 1\tUS\n")
+            z.writestr("student_resource/dataset/train/train_source3.tsv", "".join(s3_lines))
+
+        sample_dir = tmp_path / "samples"
+
+        # 1. Request S1=5, S2/S3=20
+        s1, s2, s3, truth = extract_representative_sample(
+            archive_path=zip_path,
+            output_dir=sample_dir,
+            n_s2_s3=20,
+            n_s1=5,
+        )
+        s1_count = len(s1.read_text(encoding="utf-8").strip().splitlines()) - 1
+        s2_count = len(s2.read_text(encoding="utf-8").strip().splitlines()) - 1
+        s3_count = len(s3.read_text(encoding="utf-8").strip().splitlines()) - 1
+        assert s1_count == 5
+        assert s2_count + s3_count == 20
+
+        # 2. Request different sizes: S1=10, S2/S3=40 (must not reuse stale 5/20 cache)
+        s1_b, s2_b, s3_b, truth_b = extract_representative_sample(
+            archive_path=zip_path,
+            output_dir=sample_dir,
+            n_s2_s3=40,
+            n_s1=10,
+        )
+        s1_count_b = len(s1_b.read_text(encoding="utf-8").strip().splitlines()) - 1
+        s2_count_b = len(s2_b.read_text(encoding="utf-8").strip().splitlines()) - 1
+        s3_count_b = len(s3_b.read_text(encoding="utf-8").strip().splitlines()) - 1
+        assert s1_count_b == 10
+        assert s2_count_b + s3_count_b == 40
+
+        # 3. Request more S1 queries than available (e.g. 50 > 20): must reject
+        with pytest.raises(ValueError, match="Requested 50 S1 queries, but only found 20 in archive"):
+            extract_representative_sample(
+                archive_path=zip_path,
+                output_dir=sample_dir,
+                n_s2_s3=40,
+                n_s1=50,
+            )
