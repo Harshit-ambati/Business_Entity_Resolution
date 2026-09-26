@@ -12,7 +12,7 @@ All Python source, including tests, is under `src/`. `src/ber/contracts.py` defi
 ```powershell
 python -m pip install -r requirements.txt
 python -m pip install -e .
-python -m pytest
+python -m pytest -q
 ```
 
 The editable install makes `import ber` and `python -m ber.cli` work from any working directory in that environment. H0 has no runtime dependency outside Python's standard library; the pinned requirement installs pytest for tests. The fixtures in `src/tests/fixtures/` use invented businesses and run without the challenge data. They cover two true links for one S1, a similar-name hard negative, a singleton, France, Japanese text, and an empty address. The tests do not claim training or evaluation quality.
@@ -60,6 +60,18 @@ python -m ber.cli validate --data-root student_resource/dataset --work-dir artif
   - Run CLI audit: `python -m ber.quality --data-root <path> [--output <report.json>]`.
   - See `docs/NORMALIZATION.md` for full contract specification.
 
+
+## Suresh Workstream — Metrics & Output
+
+Suresh implements `ber.metrics` and `ber.output` according to `docs/CONTRACTS.md` and `docs/04-SURESH.md`:
+- Official Macro $F_{0.5}$ evaluation with empty match handling and edge-level recall (`ber.metrics.evaluate`).
+- Candidate retrieval diagnostics and oracle ceiling calculation (`ber.metrics.evaluate_candidates`).
+- Prediction error analysis breakdown (`ber.metrics.error_analysis`).
+- Output TSV generation preserving exact $S_1$ order, strict ID validation, and atomic writes (`ber.output.write_outputs`).
+- Preflight validator enforcing submission formatting, candidate file requirements, and ID integrity (`ber.output.validate_outputs`).
+- Organizer validator runner wrapper (`ber.output.run_organizer_validator`).
+
+Full evaluation documentation and verification results are in [docs/SURESH-EVALUATION.md](../../docs/SURESH-EVALUATION.md).
 
 ## Fixed validation partition
 
