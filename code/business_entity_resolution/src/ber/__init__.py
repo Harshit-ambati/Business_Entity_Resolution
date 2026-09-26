@@ -30,6 +30,7 @@ from .output import (
     write_outputs,
 )
 from .quality import (
+    QualityIssue,
     SourceQualityReport,
     TruthQualityReport,
     audit_dataset,
@@ -62,6 +63,7 @@ __all__ = [
     "validate_truth_file",
     "check_duplicate_ids_partitioned",
     "audit_dataset",
+    "QualityIssue",
     "SourceQualityReport",
     "TruthQualityReport",
     "evaluate",
