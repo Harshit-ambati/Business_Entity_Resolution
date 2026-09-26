@@ -482,6 +482,7 @@ def audit_dataset(
     data_root: str | Path,
     *,
     output_path: Path | None = None,
+    temp_dir: Path | None = None,
 ) -> dict[str, Any]:
     """Stream and audit all available source and truth files under a dataset directory.
 
@@ -489,9 +490,20 @@ def audit_dataset(
     file sizes, and execution time.
 
     Duplicate-ID checks use disk-partitioned hashing (``check_duplicate_ids_partitioned``)
-    so that auditing 10–24 million records stays within the 8 GB RAM budget.  The result
+    so that auditing 10-24 million records stays within the 8 GB RAM budget.  The result
     records ``duplicate_check_method: "partitioned_disk"`` for every source file so the
     caller can verify which checker was used.
+
+    Parameters
+    ----------
+    data_root : str | Path
+        Directory containing the challenge TSV files.
+    output_path : Path | None
+        Optional path to write the JSON report to.
+    temp_dir : Path | None
+        Directory for disk-partition scratch files used by
+        ``check_duplicate_ids_partitioned``.  Defaults to the OS temp directory.
+        Set this explicitly when the OS temp directory is low on space.
 
     Raises
     ------
@@ -531,9 +543,11 @@ def audit_dataset(
             # Basic streaming validation (no in-memory duplicate set for large files).
             rep = validate_source_file(file_path, prefix, check_duplicates=False)
 
-            # Duplicate-ID check via memory-bounded disk partitioning (fix for issue 2).
-            # This is the only method that stays within 8 GB for 10–24 M rows.
-            duplicate_ids = check_duplicate_ids_partitioned(file_path, id_column=0)
+            # Duplicate-ID check via memory-bounded disk partitioning.
+            # This is the only method that stays within 8 GB for 10-24 M rows.
+            duplicate_ids = check_duplicate_ids_partitioned(
+                file_path, id_column=0, temp_dir=temp_dir
+            )
 
             results["files"][filename] = {
                 "path": str(file_path),
@@ -576,20 +590,3 @@ def audit_dataset(
             json.dump(results, f, indent=2, ensure_ascii=False)
 
     return results
-
-
-def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(
-        description="Stream and audit challenge TSV datasets for data quality (PR T3)"
-    )
-    parser.add_argument("--data-root", type=Path, required=True, help="Directory containing dataset TSVs")
-    parser.add_argument("--output", type=Path, default=None, help="Optional output JSON path for the report")
-    args = parser.parse_args(argv)
-
-    report = audit_dataset(args.data_root, output_path=args.output)
-    print(json.dumps(report, indent=2, ensure_ascii=False))
-    return 0
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())

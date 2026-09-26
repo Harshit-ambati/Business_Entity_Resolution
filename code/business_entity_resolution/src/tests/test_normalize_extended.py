@@ -355,12 +355,19 @@ def test_quality_issue_exported_from_ber():
 # ---------------------------------------------------------------------------
 
 
+# The src/ directory of this checkout, used to pin PYTHONPATH for subprocess
+# CLI tests so they always exercise the local source tree and not any
+# globally installed version of the package.
+_SRC_PATH = Path(__file__).parent.parent  # .../src/
+
+
 def test_audit_cli_help():
     """python -m ber.audit --help must exit 0 and print usage."""
     result = subprocess.run(
         [sys.executable, "-m", "ber.audit", "--help"],
         capture_output=True,
         text=True,
+        env={"PYTHONPATH": str(_SRC_PATH)},
     )
     assert result.returncode == 0
     assert "--data-root" in result.stdout
@@ -389,9 +396,13 @@ def test_audit_cli_runs_on_fixture_dir(tmp_path):
         (tmp_path / dest_name).write_bytes(src_path.read_bytes())
 
     result = subprocess.run(
-        [sys.executable, "-m", "ber.audit", "--data-root", str(tmp_path)],
+        [sys.executable, "-m", "ber.audit", "--data-root", str(tmp_path),
+         "--temp-dir", str(tmp_path)],
         capture_output=True,
         text=True,
+        # Pin PYTHONPATH to the checkout's src/ so the test always exercises
+        # the local source tree, not any globally installed version.
+        env={"PYTHONPATH": str(_SRC_PATH)},
     )
     assert result.returncode == 0, f"stderr: {result.stderr}"
     data = json.loads(result.stdout)

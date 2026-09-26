@@ -117,7 +117,7 @@ def test_audit_dataset_on_fixtures(tmp_path):
         (tmp_path / test_name).write_bytes((FIXTURES / src_name).read_bytes())
 
     out_json = tmp_path / "audit_report.json"
-    audit_res = audit_dataset(tmp_path, output_path=out_json)
+    audit_res = audit_dataset(tmp_path, output_path=out_json, temp_dir=tmp_path)
 
     assert "train_source1.tsv" in audit_res["files"]
     assert "train_ground_truth.tsv" in audit_res["files"]
@@ -137,10 +137,10 @@ def test_audit_dataset_on_fixtures(tmp_path):
 def test_audit_missing_required_challenge_file(tmp_path):
     """Issue 1 regression: audit_dataset must raise FileNotFoundError (not exit 0 silently)
     when a required challenge file is absent from the data root."""
-    # Empty directory — no challenge files at all.
+    # Empty directory -- no challenge files at all.
     import pytest
     with pytest.raises(FileNotFoundError, match="Required challenge file not found"):
-        audit_dataset(tmp_path)
+        audit_dataset(tmp_path, temp_dir=tmp_path)
 
 
 def test_audit_partial_missing_required_file(tmp_path):
@@ -150,7 +150,7 @@ def test_audit_partial_missing_required_file(tmp_path):
     content = (FIXTURES / "source1.tsv").read_bytes()
     (tmp_path / "train_source1.tsv").write_bytes(content)
     with pytest.raises(FileNotFoundError, match="Required challenge file not found"):
-        audit_dataset(tmp_path)
+        audit_dataset(tmp_path, temp_dir=tmp_path)
 
 
 def test_streaming_memory_efficiency(tmp_path):
@@ -167,3 +167,45 @@ def test_streaming_memory_efficiency(tmp_path):
     assert report.total_rows == num_rows
     assert report.valid_rows == num_rows
     assert report.is_valid
+
+
+def test_audit_invalid_tsv_content_is_valid_false(tmp_path):
+    """audit_dataset must report is_valid=False when a present file has a bad prefix error."""
+    # Write all seven required files; corrupt one with a wrong-prefix row.
+    bad_source = (
+        "entity_id\tbusiness_name\tbusiness_address\tcountry\n"
+        "S2-BAD\tWrong Prefix Co\t1 Main St\tUS\n"  # wrong prefix for an S1 file
+    )
+    good_source = (
+        "entity_id\tbusiness_name\tbusiness_address\tcountry\n"
+        "S1-001\tGood Corp\t1 Main St\tUS\n"
+    )
+    good_truth = (
+        "source1_entity_id\tmatched_entity_ids\n"
+        "S1-001\t\n"
+    )
+    good_s2 = (
+        "entity_id\tbusiness_name\tbusiness_address\tcountry\n"
+        "S2-001\tGood Corp\t1 Main St\tUS\n"
+    )
+    good_s3 = (
+        "entity_id\tbusiness_name\tbusiness_address\tcountry\n"
+        "S3-001\tGood Corp\t1 Main St\tUS\n"
+    )
+    files = {
+        "train_source1.tsv": bad_source,
+        "train_source2.tsv": good_s2,
+        "train_source3.tsv": good_s3,
+        "train_ground_truth.tsv": good_truth,
+        "test_source1.tsv": good_source,
+        "test_source2.tsv": good_s2,
+        "test_source3.tsv": good_s3,
+    }
+    for name, content in files.items():
+        (tmp_path / name).write_text(content, encoding="utf-8")
+
+    report = audit_dataset(tmp_path, temp_dir=tmp_path)
+    # The corrupted file must be flagged
+    assert not report["files"]["train_source1.tsv"]["is_valid"]
+    # A clean file must still pass
+    assert report["files"]["test_source1.tsv"]["is_valid"]
