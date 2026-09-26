@@ -1,0 +1,9 @@
+entity_id	business_name	business_address	country
+S1-DEVANAGARI	किताब घर प्रकाशन	23 कनॉट प्लेस	India
+S1-ARABIC	مكتبة الشرق	12 شارع النيل	Egypt
+S1-CYRILLIC	ООО Вектор	улица Ленина 5	Russia
+S1-MIXED	Tata Sons & किताब घर	12 River Rd, नई दिल्ली	India
+S1-FULLWIDTH	Ａｃｍｅ　Ｃｏｒｐ	１２ Ｂｒｏａｄｗａｙ	United States
+S1-EMPTY-NAME		100 Oak Avenue	United States
+S1-EMPTY-BOTH		 	France
+S1-AMPERSAND-ADDR	Blue & Gold Ltd	12 & Oak Ave	United States
