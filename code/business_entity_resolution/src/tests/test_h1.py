@@ -100,6 +100,9 @@ def test_training_manifest_reload_order_and_failures(tmp_path):
     assert (tmp_path / "h1_model.txt").is_file()
     path = tmp_path / "h1_manifest.json"
     assert path.is_file() and manifest.license == "MIT" and manifest.model_library_version
+    saved = json.loads(path.read_text(encoding="utf-8"))
+    assert saved["rule_score_untuned"] is True
+    assert '.encode("utf-8")' in saved["split_definition"]
     assert manifest.training_positive_count == counts.retrieved_positives
     loaded = load_model(path)
     s1, group, _ = rows[0]

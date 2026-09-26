@@ -141,6 +141,7 @@ class ModelManifest:
     artifact_sha256: str
     training_timestamp_utc: str
     training_config: dict[str, int]
+    rule_score_untuned: bool = True
 
 
 @dataclass(frozen=True)
@@ -193,7 +194,7 @@ def train_model(training_pairs: Iterable[TrainingPair],
         "binary_gradient_boosted_trees", "lightgbm", lgb.__version__, "MIT",
         config.seed, FEATURE_SCHEMA_VERSION, FEATURE_NAMES, config.normalization_version,
         config.index_version, config.candidate_config_id,
-        'sha256("2026|" + S1_ID) first 8 bytes big-endian mod 10 == 0',
+        'sha256(("2026|" + S1_ID).encode("utf-8")) first 8 digest bytes as unsigned big-endian integer mod 10 == 0',
         pos, neg, asdict(config.sampling), artifact.name, checksum,
         datetime.now(timezone.utc).isoformat(),
         {"num_boost_round": config.num_boost_round, "max_training_pairs": config.max_training_pairs,
