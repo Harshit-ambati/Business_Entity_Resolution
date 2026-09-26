@@ -194,22 +194,32 @@ cd code/business_entity_resolution
 python src/tests/suresh_memory_benchmark.py
 ```
 
+### Benchmark Methodology & Setup
+1. **Stage 1 & 2 (Writer and Preflight Throughput):** Streams the full 1,732,544 test S1 IDs with empty match and candidate sets (`yield sid, ()`). This isolates and measures file I/O throughput, TSV delimiter formatting, deterministic sorting, UTF-8 compliance, and preflight rule checking on 1.73M rows without requiring precomputed model inference.
+2. **Stage 3 (Organizer Submission Validator):** Runs the official organizer `utils/validate_submission.py`. As noted in its script (line 9), it checks submission file formatting, delimiters, headers, row count, non-empty IDs, and prediction-subset-of-candidates constraints; it has no ground truth and never computes a match quality score. If organizer test sources are absent (or running in synthetic mode), the benchmark records `SKIPPED (format not verified)` and exits 0 for CI, unless `--require-organizer` is specified.
+3. **Stage 4 (Candidate and Metric Scalability):** Streams 1,732,544 synthetic entities through `evaluate_candidates()` and `evaluate()`. Because the challenge test set contains no ground truth labels, metrics such as oracle $F_{0.5} = 1.000$ and singleton accuracy = $1.000$ are strictly synthetic stress tests to verify algorithmic scaling, in-memory index size, candidate count distributions, and garbage collection under full test volume. They do not represent competition leaderboard scores.
+4. **Memory Measurement & Scope:**
+   - Peak process memory is tracked per stage using `psutil.Process().memory_info().peak_wset` (on Windows) or `resource.getrusage().ru_maxrss * 1024` (on POSIX), along with stage-end RSS.
+   - Python heap memory is tracked per stage via `tracemalloc.get_traced_memory()`.
+   - The benchmark's 8 GB budget pass condition tests `max_peak_process_bytes < 8 GiB`.
+   - **Scope Qualification:** The measured 1.63 GB peak process working set (1.39 GB Python traced) applies strictly to Suresh's output writer and evaluation components under 1.73M volume. It does *not* cover memory consumption for upstream candidate retrieval (Sabeena) or model feature extraction/inference (Harshit).
+
 ### Measured Performance on 1,732,544 S1 Entities
 
-| Pipeline Stage | Evaluated Entities | Runtime | Peak Python Memory (traced) | Process Working Set (RSS) | Status / Result |
+| Pipeline Stage | Evaluated Entities | Runtime | Peak Python Memory (traced) | Peak Process Memory (Working Set) | Status / Result |
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | `write_outputs()` | 1,732,544 test S1 | 100.65 s | 169.81 MB | ~200 MB | **PASS** (1.73M rows written) |
 | `validate_outputs()` | 1,732,544 test S1 | 80.79 s | 817.60 MB | ~950 MB | **PASS** (0 errors, 259,452 France rows verified) |
-| Organizer `validate_submission.py` | 1,732,544 test S1 | 15.20 s | < 100 MB | ~150 MB | **PASS** (format-only check, exit code 0) |
+| Organizer `validate_submission.py` | 1,732,544 test S1 | 15.20 s | < 100 MB | ~150 MB | **PASS** (format check only, exit code 0) |
 | `evaluate_candidates()` | 1,732,544 synthetic S1 | 63.33 s | 858.17 MB | ~1.10 GB | **PASS** (synthetic oracle F0.5 = 1.000) |
 | `evaluate()` | 1,732,544 synthetic S1 | 155.23 s | 1,394.32 MB | ~1.63 GB | **PASS** (synthetic singleton acc = 1.000) |
 
-> ⚠️ **Important Disclaimers on Benchmark Scope and Metrics:**
-> 1. **Organizer Validator Checks Format, Not Quality:** The official organizer validator (`utils/validate_submission.py`, line 9) explicitly notes that it reads only output files and test source files to verify format constraints; it has no ground truth and never computes a score. An exit code 0 (`PASS`) proves only that file format, column headers, TSV delimiters, complete 1.73M S1 row coverage, valid non-empty IDs, and prediction-subset-of-candidates rules are satisfied. It does NOT establish entity resolution match quality or model accuracy.
-> 2. **Evaluation Metrics from Synthetic Stream Only:** The challenge test set contains no ground truth labels. Therefore, oracle F0.5 = 1.000 and singleton accuracy = 1.000 in this benchmark are measured exclusively on a synthetic stream to verify algorithmic and memory scaling under full 1.73M volume. They do NOT represent competition leaderboard performance.
-> 3. **Memory Scope:** The 1.63 GB peak process working set (1.39 GB Python traced) verifies that Suresh's output writer and evaluation components run within the 8 GB machine budget (< 25% of total capacity). It does NOT establish memory use for the full retrieval-plus-model pipeline (which involves candidate indexing, feature calculation, and classifier inference).
+> ⚠️ **Summary Disclaimers:**
+> 1. **Organizer Validator Checks Format, Not Quality:** Line 9 of `utils/validate_submission.py` states it has no ground truth and never computes a match score. Exit code 0 confirms format and row coverage only.
+> 2. **Evaluation Metrics from Synthetic Stream Only:** The challenge test set has no ground truth labels. Stage 4 metrics are synthetic scaling benchmarks, not model performance.
+> 3. **Memory Scope:** The 1.63 GB peak process working set reflects Suresh's writer and evaluator components only, not the full candidate retrieval and model pipeline.
 
-**8 GB Machine Target:** Max peak memory across all stages of the writer/evaluator benchmark is **1.63 GB process working set** (1.39 GB Python traced), well within the 8 GB RAM laptop budget.
+**8 GB Machine Target:** Max peak process memory across all stages of the writer/evaluator benchmark is **1.63 GB process working set** (1.39 GB Python traced), well within the 8 GB RAM laptop budget (< 25% of budget).
 
 
 ## Continuous Integration (CI) Workflow
@@ -234,13 +244,23 @@ The dataset-free CI workflow is implemented in `.github/workflows/pr-checks.yml`
 ### Report schema
 All results are structured dataclasses (`EvaluationResult`, `CandidateResult`, `ErrorReport`) — JSON-serializable if needed.
 
-### Preflight checklist (Suresh's gate)
-- [x] `validate_outputs()` returns `passed=True` (measured on 1,732,544 rows: 0 errors)
-- [x] Organizer validator returns exit code 0 (`PASS - no blocking issues found. Safe to submit.`)
-- [x] Oracle sanity check verified (`model <= oracle`)
-- [x] All 1,732,544 test S1 rows have output rows
-- [x] All 259,452 French S1 rows have output rows
-- [x] No duplicate IDs in any row
-- [x] Predictions ⊆ candidates for all S1
-- [x] Dataset-free CI workflow active (`.github/workflows/pr-checks.yml`)
-- [x] 8 GB RAM budget compliance verified (peak working set 1.63 GB on 1.73M entities)
+### Milestone R4 Verification (Delivered by Suresh)
+- [x] Streaming output writer validated at 1.73M scale (`write_outputs()` streams all 1,732,544 S1 rows without OOM)
+- [x] Preflight validator (`validate_outputs()`) verified on 1.73M rows (100% S1 row coverage, French S1 coverage, duplicate detection, UTF-8 TSV compliance)
+- [x] Organizer validator integration (`run_organizer_validator`) verified (reports exact output and exit code; explicitly flagged as format check only)
+- [x] Candidate & metric streaming evaluators (`evaluate_candidates()`, `evaluate()`) verified at full 1.73M volume with synthetic stream
+- [x] Per-stage process memory tracking implemented; peak process working set (1.63 GB) < 8 GB limit for writer/evaluator
+- [x] Dataset-free CI workflow active (`.github/workflows/pr-checks.yml`) and passing (121 tests)
+
+### Final Release Gate (Pending — To be executed with Harshit upon real model inference)
+- [ ] Candidate retrieval outputs populated (Sabeena's candidate sets, non-empty)
+- [ ] Pair model predictions populated (Harshit's model decisions, non-empty)
+- [ ] `matching_results.tsv` and `candidate_pairs.tsv` generated from same inference run with real model predictions
+- [ ] `validate_outputs()` returns `passed=True` on actual model predictions and candidate pairs
+- [ ] All 1,732,544 test S1 rows populated in final `matching_results.tsv` and `candidate_pairs.tsv`
+- [ ] All 259,452 French S1 rows populated with valid candidates and predictions
+- [ ] Final predictions ⊆ candidates verified for every test S1 row on real pipeline output
+- [ ] Organizer validator `validate_submission.py` executed against unzipped `dataset/test` with `--require-organizer` and returns exit code 0 (`PASS`)
+- [ ] Oracle sanity check verified on real validation split (`model_f0_5 <= oracle_f0_5`)
+- [ ] Submission zip assembled per organizer specification with code, documentation, and dependencies
+- [ ] End-to-end inference + writing pipeline executes within 8 GB RAM and 4-hour runtime budget
