@@ -64,41 +64,12 @@ def run_benchmark(
     results["index_disk_size_bytes"] = disk_bytes
     results["index_disk_size_mb"] = disk_bytes / (1024 * 1024)
 
-    # 2. Candidate Retrieval Benchmark
+    # 2. Candidate Retrieval Benchmark (Streaming)
     index_store = open_index(manifest)
 
-    tracemalloc.start()
-    t1 = time.perf_counter()
-    groups: list[CandidateGroup] = list(
-        iter_candidates(
-            source1_path=source1_path,
-            index_store=index_store,
-            config=blocking_config,
-        )
-    )
-    t_retrieval = time.perf_counter() - t1
-    _, peak_retrieval_mem = tracemalloc.get_traced_memory()
-    tracemalloc.stop()
-
-    results["retrieval_time_sec"] = t_retrieval
-    results["retrieval_peak_mem_mb"] = peak_retrieval_mem / (1024 * 1024)
-    results["num_s1_queries"] = len(groups)
-
-    # Candidate statistics
-    candidate_counts = [len(g.candidates) for g in groups]
-    total_pairs = sum(candidate_counts)
-    cartesian_product = len(groups) * total_candidates_pool
-
-    results["total_candidate_pairs"] = total_pairs
-    results["candidate_count_mean"] = statistics.mean(candidate_counts) if candidate_counts else 0.0
-    results["candidate_count_median"] = statistics.median(candidate_counts) if candidate_counts else 0.0
-    results["candidate_count_min"] = min(candidate_counts) if candidate_counts else 0
-    results["candidate_count_max"] = max(candidate_counts) if candidate_counts else 0
-    results["reduction_ratio"] = 1.0 - (total_pairs / cartesian_product) if cartesian_product > 0 else 0.0
-
-    # 3. Truth Metrics (if provided)
+    # Preload truth if provided
+    truth_map: dict[str, set[str]] = {}
     if truth_path and truth_path.exists():
-        truth_map: dict[str, set[str]] = {}
         with open(truth_path, "r", encoding="utf-8") as f:
             header = f.readline().rstrip("\r\n").split("\t")
             id_idx = header.index("source1_entity_id")
@@ -111,22 +82,58 @@ def run_benchmark(
                 matches = [m.strip() for m in parts[match_idx].split(",") if m.strip()]
                 truth_map[s1_id] = set(matches)
 
-        total_true_edges = sum(len(matches) for matches in truth_map.values())
-        retrieved_true_edges = 0
-        complete_s1_covered = 0
-        total_matched_s1 = sum(1 for m in truth_map.values() if len(m) > 0)
+    total_true_edges = sum(len(matches) for matches in truth_map.values())
+    total_matched_s1 = sum(1 for m in truth_map.values() if len(m) > 0)
+    retrieved_true_edges = 0
+    complete_s1_covered = 0
 
-        group_map = {g.source1_entity_id: {c.candidate_entity_id for c in g.candidates} for g in groups}
+    candidate_counts: list[int] = []
+    total_pairs = 0
+    num_s1 = 0
 
-        for s1_id, true_matches in truth_map.items():
-            if not true_matches:
-                continue
-            retrieved = group_map.get(s1_id, set())
-            hits = true_matches.intersection(retrieved)
-            retrieved_true_edges += len(hits)
-            if hits == true_matches:
-                complete_s1_covered += 1
+    tracemalloc.start()
+    t1 = time.perf_counter()
 
+    for group in iter_candidates(
+        source1_path=source1_path,
+        index_store=index_store,
+        config=blocking_config,
+    ):
+        num_s1 += 1
+        count = len(group.candidates)
+        total_pairs += count
+        candidate_counts.append(count)
+
+        if truth_map and group.source1_entity_id in truth_map:
+            true_matches = truth_map[group.source1_entity_id]
+            if true_matches:
+                retrieved_cids = {c.candidate_entity_id for c in group.candidates}
+                hits = true_matches.intersection(retrieved_cids)
+                retrieved_true_edges += len(hits)
+                if hits == true_matches:
+                    complete_s1_covered += 1
+
+    t_retrieval = time.perf_counter() - t1
+    _, peak_retrieval_mem = tracemalloc.get_traced_memory()
+    tracemalloc.stop()
+
+    index_store.close()
+
+    results["retrieval_time_sec"] = t_retrieval
+    results["retrieval_peak_mem_mb"] = peak_retrieval_mem / (1024 * 1024)
+    results["num_s1_queries"] = num_s1
+
+    # Candidate statistics
+    cartesian_product = num_s1 * total_candidates_pool
+
+    results["total_candidate_pairs"] = total_pairs
+    results["candidate_count_mean"] = statistics.mean(candidate_counts) if candidate_counts else 0.0
+    results["candidate_count_median"] = statistics.median(candidate_counts) if candidate_counts else 0.0
+    results["candidate_count_min"] = min(candidate_counts) if candidate_counts else 0
+    results["candidate_count_max"] = max(candidate_counts) if candidate_counts else 0
+    results["reduction_ratio"] = 1.0 - (total_pairs / cartesian_product) if cartesian_product > 0 else 0.0
+
+    if truth_path and truth_path.exists():
         results["true_edge_recall"] = retrieved_true_edges / total_true_edges if total_true_edges > 0 else 1.0
         results["complete_link_coverage"] = complete_s1_covered / total_matched_s1 if total_matched_s1 > 0 else 1.0
         results["total_true_edges"] = total_true_edges
@@ -161,6 +168,38 @@ def print_report(results: dict[str, Any]) -> None:
     print("=" * 60)
 
 
+def generate_scale_data(output_dir: Path, n_records: int) -> tuple[Path, Path, Path, Path]:
+    """Generate a synthetic benchmark corpus of n_records S2/S3 and n_records//10 S1 queries."""
+    output_dir.mkdir(parents=True, exist_ok=True)
+    s1_path = output_dir / "source1.tsv"
+    s2_path = output_dir / "source2.tsv"
+    s3_path = output_dir / "source3.tsv"
+    truth_path = output_dir / "truth.tsv"
+
+    n_s1 = max(10, n_records // 10)
+    with open(s1_path, "w", encoding="utf-8") as f1, open(truth_path, "w", encoding="utf-8") as ft:
+        f1.write("entity_id\tbusiness_name\tbusiness_address\tcountry\n")
+        ft.write("source1_entity_id\tmatched_entity_ids\n")
+        for i in range(n_s1):
+            f1.write(f"S1-{i}\tEnterprise {i} Global Services\t{i} Market Street\tIndia\n")
+            if i < int(n_s1 * 0.8):
+                ft.write(f"S1-{i}\tS2-{i},S3-{i}\n")
+            else:
+                ft.write(f"S1-{i}\t\n")
+
+    with open(s2_path, "w", encoding="utf-8") as f2:
+        f2.write("entity_id\tbusiness_name\tbusiness_address\tcountry\n")
+        for i in range(n_records):
+            f2.write(f"S2-{i}\tEnterprise {i} Global Services LLC\t{i} Market Street\tIndia\n")
+
+    with open(s3_path, "w", encoding="utf-8") as f3:
+        f3.write("entity_id\tbusiness_name\tbusiness_address\tcountry\n")
+        for i in range(n_records):
+            f3.write(f"S3-{i}\tEnterprise {i} Solutions\t{i} Market Street Suite 10\tIndia\n")
+
+    return s1_path, s2_path, s3_path, truth_path
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Candidate retrieval benchmark")
     parser.add_argument("--source1", type=Path, help="Path to source1.tsv")
@@ -169,10 +208,15 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--truth", type=Path, default=None, help="Path to truth.tsv (optional)")
     parser.add_argument("--work-dir", type=Path, default=None, help="Directory to store intermediate index")
     parser.add_argument("--fixtures", action="store_true", help="Use built-in synthetic test fixtures")
+    parser.add_argument("--generate-scale", type=int, default=None, help="Generate and benchmark a large synthetic corpus of N records")
 
     args = parser.parse_args(argv)
 
-    if args.fixtures or (not args.source1 and not args.source2 and not args.source3):
+    if args.generate_scale:
+        work_dir = args.work_dir or Path("artifacts/scale_blocking")
+        scale_data_dir = work_dir / f"scale_{args.generate_scale}"
+        s1, s2, s3, truth = generate_scale_data(scale_data_dir, args.generate_scale)
+    elif args.fixtures or (not args.source1 and not args.source2 and not args.source3):
         fixture_dir = Path(__file__).resolve().parent.parent / "tests" / "fixtures"
         s1 = fixture_dir / "source1.tsv"
         s2 = fixture_dir / "source2.tsv"
@@ -181,7 +225,7 @@ def main(argv: list[str] | None = None) -> int:
         work_dir = Path("artifacts/fixtures_blocking")
     else:
         if not (args.source1 and args.source2 and args.source3):
-            parser.error("Must provide --source1, --source2, and --source3, or pass --fixtures")
+            parser.error("Must provide --source1, --source2, and --source3, or pass --fixtures / --generate-scale")
         s1 = args.source1
         s2 = args.source2
         s3 = args.source3

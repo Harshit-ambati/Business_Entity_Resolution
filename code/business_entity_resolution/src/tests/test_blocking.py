@@ -352,13 +352,15 @@ class TestBenchmarkHelper:
 
     def test_iter_candidates_split_mismatch_raises(self, tmp_path: Path) -> None:
         """iter_candidates raises ValueError when query S1 split mismatches index split."""
-        # Create an index with split="train"
-        manifest = build_index(
-            FIXTURES / "source2.tsv",
-            FIXTURES / "source3.tsv",
-            tmp_path / "train_work",
-            IndexConfig(split="train"),
-        )
+        # Create an index with source files in a train/ folder
+        train_dir = tmp_path / "train"
+        train_dir.mkdir()
+        s2 = train_dir / "source2.tsv"
+        s3 = train_dir / "source3.tsv"
+        s2.write_text((FIXTURES / "source2.tsv").read_text(encoding="utf-8"), encoding="utf-8")
+        s3.write_text((FIXTURES / "source3.tsv").read_text(encoding="utf-8"), encoding="utf-8")
+
+        manifest = build_index(s2, s3, tmp_path / "train_work", IndexConfig())
         store = open_index(manifest)
 
         # Create a query file under a test/ folder

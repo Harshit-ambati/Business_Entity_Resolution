@@ -145,28 +145,29 @@ class IndexManifest:
 # ---------------------------------------------------------------------------
 
 class IndexStore:
-    """Index store with inverted indexes and disk-backed record lookup.
+    """Disk-backed index store with inverted indexes and record lookup in SQLite.
 
     Provides:
     - ``get_record``: entity ID → NormalizedRecord lookup (disk-backed via SQLite
       or in-memory fallback, with local caching)
-    - ``lookup_exact_name``: exact normalized name → entity IDs
-    - ``lookup_token``: name token → entity IDs (posting list)
-    - ``lookup_address_token``: address token → entity IDs (posting list)
-    - ``get_token_doc_freq``: document frequency of a name token
-    - ``get_country_entities``: all entity IDs for a country key
+    - ``lookup_exact_name``: exact normalized name → entity IDs (queried from SQLite)
+    - ``lookup_token``: name token → entity IDs (queried from SQLite)
+    - ``lookup_address_token``: address token → entity IDs (queried from SQLite)
+    - ``get_token_doc_freq``: document frequency of a name token (queried from SQLite)
+    - ``get_country_entities``: all entity IDs for a country key (queried from SQLite)
 
-    All posting lists are sorted for deterministic iteration.
+    All posting lists are sorted for deterministic iteration. Python heap memory
+    is strictly bounded because all postings and records reside in SQLite on disk.
     """
 
     def __init__(
         self,
         records: dict[str, NormalizedRecord] | None,
-        name_exact_index: dict[str, list[str]],
-        token_postings: dict[str, list[str]],
-        token_doc_freq: dict[str, int],
-        country_entities: dict[str, set[str]],
-        address_token_postings: dict[str, list[str]],
+        name_exact_index: dict[str, list[str]] | None,
+        token_postings: dict[str, list[str]] | None,
+        token_doc_freq: dict[str, int] | None,
+        country_entities: dict[str, set[str]] | None,
+        address_token_postings: dict[str, list[str]] | None,
         total_records: int,
         manifest: IndexManifest,
         db_path: Path | str | None = None,
@@ -185,6 +186,7 @@ class IndexStore:
 
         if self._db_path and self._db_path.exists():
             self._db_conn = sqlite3.connect(str(self._db_path), check_same_thread=False)
+            self._db_conn.execute("PRAGMA query_only = ON")
 
     def close(self) -> None:
         """Close SQLite connection if open."""
@@ -214,7 +216,7 @@ class IndexStore:
         """
         validate_entity_id(entity_id, CANDIDATE_PREFIXES)
 
-        # 1. Check in-memory store if present
+        # 1. Check in-memory store if present (test fallback)
         if self._records is not None and entity_id in self._records:
             return self._records[entity_id]
 
@@ -249,27 +251,92 @@ class IndexStore:
 
         If *country_key* is given, restrict to entities in that country.
         """
-        ids = self._name_exact.get(name_norm, [])
-        if country_key is not None:
-            country_set = self._country_entities.get(country_key, set())
-            ids = [eid for eid in ids if eid in country_set]
-        return ids
+        if self._db_conn is not None:
+            cur = self._db_conn.cursor()
+            if country_key is not None:
+                cur.execute(
+                    "SELECT entity_id FROM postings_exact "
+                    "WHERE name_norm = ? AND country_key = ? "
+                    "ORDER BY entity_id",
+                    (name_norm, country_key),
+                )
+            else:
+                cur.execute(
+                    "SELECT entity_id FROM postings_exact "
+                    "WHERE name_norm = ? "
+                    "ORDER BY entity_id",
+                    (name_norm,),
+                )
+            return [row[0] for row in cur.fetchall()]
+
+        if self._name_exact is not None:
+            ids = self._name_exact.get(name_norm, [])
+            if country_key is not None and self._country_entities is not None:
+                country_set = self._country_entities.get(country_key, set())
+                ids = [eid for eid in ids if eid in country_set]
+            return ids
+        return []
 
     def lookup_token(self, token: str) -> list[str]:
         """Return sorted entity IDs whose name contains *token*."""
-        return self._token_postings.get(token, [])
+        if self._db_conn is not None:
+            cur = self._db_conn.cursor()
+            cur.execute(
+                "SELECT entity_id FROM postings_name_token "
+                "WHERE token = ? "
+                "ORDER BY entity_id",
+                (token,),
+            )
+            return [row[0] for row in cur.fetchall()]
+
+        if self._token_postings is not None:
+            return self._token_postings.get(token, [])
+        return []
 
     def lookup_address_token(self, token: str) -> list[str]:
         """Return sorted entity IDs whose address contains *token*."""
-        return self._address_token_postings.get(token, [])
+        if self._db_conn is not None:
+            cur = self._db_conn.cursor()
+            cur.execute(
+                "SELECT entity_id FROM postings_address_token "
+                "WHERE token = ? "
+                "ORDER BY entity_id",
+                (token,),
+            )
+            return [row[0] for row in cur.fetchall()]
+
+        if self._address_token_postings is not None:
+            return self._address_token_postings.get(token, [])
+        return []
 
     def get_token_doc_freq(self, token: str) -> int:
         """Return the number of indexed records containing *token* in name."""
-        return self._token_doc_freq.get(token, 0)
+        if self._db_conn is not None:
+            cur = self._db_conn.cursor()
+            cur.execute(
+                "SELECT doc_freq FROM token_doc_freq WHERE token = ?",
+                (token,),
+            )
+            row = cur.fetchone()
+            return row[0] if row else 0
+
+        if self._token_doc_freq is not None:
+            return self._token_doc_freq.get(token, 0)
+        return 0
 
     def get_country_entities(self, country_key: str) -> set[str]:
         """Return the set of entity IDs with *country_key*."""
-        return self._country_entities.get(country_key, set())
+        if self._db_conn is not None:
+            cur = self._db_conn.cursor()
+            cur.execute(
+                "SELECT entity_id FROM country_entities WHERE country_key = ?",
+                (country_key,),
+            )
+            return {row[0] for row in cur.fetchall()}
+
+        if self._country_entities is not None:
+            return self._country_entities.get(country_key, set())
+        return set()
 
     # -- Properties -----------------------------------------------------------
 
@@ -285,7 +352,17 @@ class IndexStore:
     @property
     def countries(self) -> list[str]:
         """Sorted list of country keys present in the index."""
-        return sorted(self._country_entities.keys())
+        if self._db_conn is not None:
+            cur = self._db_conn.cursor()
+            cur.execute(
+                "SELECT DISTINCT country_key FROM country_entities "
+                "WHERE country_key != '' ORDER BY country_key"
+            )
+            return [row[0] for row in cur.fetchall()]
+
+        if self._country_entities is not None:
+            return sorted(self._country_entities.keys())
+        return []
 
 
 # ---------------------------------------------------------------------------
@@ -301,8 +378,8 @@ def build_index(
     """Build a candidate index from S2/S3 source files and persist to disk.
 
     Creates ``{work_dir}/blocking/manifest.json``,
-    ``{work_dir}/blocking/records.db`` (disk-backed SQLite records), and
-    ``{work_dir}/blocking/index.pkl`` (inverted posting lists).
+    ``{work_dir}/blocking/records.db`` (disk-backed SQLite records and inverted postings),
+    and ``{work_dir}/blocking/index.pkl`` (metadata).
     Returns the manifest for use with ``open_index``.
 
     Parameters
@@ -332,7 +409,7 @@ def build_index(
     elif isinstance(config, dict):
         config = IndexConfig.from_dict(config)
 
-    # Validate split consistency
+    # Validate split consistency and reject conflicting overrides
     s2_split = detect_split(source2_path)
     s3_split = detect_split(source3_path)
     if s2_split != "unspecified" and s3_split != "unspecified" and s2_split != s3_split:
@@ -340,13 +417,16 @@ def build_index(
             f"Cannot build index with mixed source splits: source2 is {s2_split!r}, "
             f"source3 is {s3_split!r}"
         )
-    # Determine canonical split for manifest
-    if config.split != "unspecified":
-        split_name = config.split
-    elif s2_split != "unspecified":
-        split_name = s2_split
-    else:
-        split_name = "train"
+    source_split = s2_split if s2_split != "unspecified" else s3_split
+
+    if config.split != "unspecified" and source_split != "unspecified" and config.split != source_split:
+        raise ValueError(
+            f"Cannot override detected split {source_split!r} with conflicting config.split {config.split!r}"
+        )
+
+    split_name = source_split if source_split != "unspecified" else (
+        config.split if config.split != "unspecified" else "train"
+    )
 
     logger.info("Building index from S2/S3 sources (split: %s)...", split_name)
     t0 = time.time()
@@ -359,18 +439,24 @@ def build_index(
     conn = sqlite3.connect(str(records_db_path))
     conn.execute("PRAGMA synchronous = OFF")
     conn.execute("PRAGMA journal_mode = MEMORY")
+    conn.execute("PRAGMA cache_size = 50000")
+
     conn.execute("CREATE TABLE records (entity_id TEXT PRIMARY KEY, data BLOB)")
+    conn.execute("CREATE TABLE postings_exact (name_norm TEXT NOT NULL, country_key TEXT NOT NULL, entity_id TEXT NOT NULL)")
+    conn.execute("CREATE TABLE postings_name_token (token TEXT NOT NULL, entity_id TEXT NOT NULL)")
+    conn.execute("CREATE TABLE postings_address_token (token TEXT NOT NULL, entity_id TEXT NOT NULL)")
+    conn.execute("CREATE TABLE country_entities (country_key TEXT NOT NULL, entity_id TEXT NOT NULL)")
+    conn.execute("CREATE TABLE token_doc_freq (token TEXT PRIMARY KEY, doc_freq INTEGER NOT NULL)")
 
     seen_ids: set[str] = set()
     total = 0
-
-    name_exact: dict[str, list[str]] = {}
-    token_postings: dict[str, list[str]] = {}
     token_doc_freq: dict[str, int] = {}
-    address_token_postings: dict[str, list[str]] = {}
-    country_entities: dict[str, set[str]] = {}
 
-    batch: list[tuple[str, bytes]] = []
+    records_batch: list[tuple[str, bytes]] = []
+    exact_batch: list[tuple[str, str, str]] = []
+    token_batch: list[tuple[str, str]] = []
+    addr_batch: list[tuple[str, str]] = []
+    country_batch: list[tuple[str, str]] = []
     batch_size = 5000
 
     for path, prefix in [(source2_path, "S2-"), (source3_path, "S3-")]:
@@ -382,46 +468,69 @@ def build_index(
             seen_ids.add(eid)
 
             nrec = normalize_record(record)
-            batch.append((eid, pickle.dumps(nrec, protocol=pickle.HIGHEST_PROTOCOL)))
-            if len(batch) >= batch_size:
-                conn.executemany("INSERT INTO records VALUES (?, ?)", batch)
-                conn.commit()
-                batch.clear()
+            records_batch.append((eid, pickle.dumps(nrec, protocol=pickle.HIGHEST_PROTOCOL)))
 
-            # Inverted posting lists
             if nrec.name_norm:
-                name_exact.setdefault(nrec.name_norm, []).append(eid)
+                exact_batch.append((nrec.name_norm, nrec.country_key or "", eid))
             for token in set(nrec.name_tokens):
+                token_batch.append((token, eid))
                 token_doc_freq[token] = token_doc_freq.get(token, 0) + 1
-                token_postings.setdefault(token, []).append(eid)
             for token in set(nrec.address_tokens):
-                address_token_postings.setdefault(token, []).append(eid)
+                addr_batch.append((token, eid))
             if nrec.country_key:
-                country_entities.setdefault(nrec.country_key, set()).add(eid)
+                country_batch.append((nrec.country_key, eid))
 
             total += 1
 
-    if batch:
-        conn.executemany("INSERT INTO records VALUES (?, ?)", batch)
-        conn.commit()
-        batch.clear()
+            if len(records_batch) >= batch_size:
+                conn.executemany("INSERT INTO records VALUES (?, ?)", records_batch)
+                conn.executemany("INSERT INTO postings_exact VALUES (?, ?, ?)", exact_batch)
+                conn.executemany("INSERT INTO postings_name_token VALUES (?, ?)", token_batch)
+                conn.executemany("INSERT INTO postings_address_token VALUES (?, ?)", addr_batch)
+                conn.executemany("INSERT INTO country_entities VALUES (?, ?)", country_batch)
+                conn.commit()
+                records_batch.clear()
+                exact_batch.clear()
+                token_batch.clear()
+                addr_batch.clear()
+                country_batch.clear()
+
+    if records_batch:
+        conn.executemany("INSERT INTO records VALUES (?, ?)", records_batch)
+        conn.executemany("INSERT INTO postings_exact VALUES (?, ?, ?)", exact_batch)
+        conn.executemany("INSERT INTO postings_name_token VALUES (?, ?)", token_batch)
+        conn.executemany("INSERT INTO postings_address_token VALUES (?, ?)", addr_batch)
+        conn.executemany("INSERT INTO country_entities VALUES (?, ?)", country_batch)
+        records_batch.clear()
+        exact_batch.clear()
+        token_batch.clear()
+        addr_batch.clear()
+        country_batch.clear()
+
+    # Insert token doc frequencies
+    freq_items = list(token_doc_freq.items())
+    token_doc_freq.clear()
+    for i in range(0, len(freq_items), batch_size):
+        conn.executemany("INSERT INTO token_doc_freq VALUES (?, ?)", freq_items[i:i + batch_size])
+    freq_items.clear()
+    conn.commit()
+
+    # Create indexes after bulk insert for maximum speed
+    conn.execute("CREATE INDEX idx_exact_name_country ON postings_exact (name_norm, country_key, entity_id)")
+    conn.execute("CREATE INDEX idx_exact_name ON postings_exact (name_norm, entity_id)")
+    conn.execute("CREATE INDEX idx_name_token ON postings_name_token (token, entity_id)")
+    conn.execute("CREATE INDEX idx_address_token ON postings_address_token (token, entity_id)")
+    conn.execute("CREATE INDEX idx_country ON country_entities (country_key, entity_id)")
+    conn.commit()
     conn.close()
 
-    logger.info("Indexed %d S2/S3 records into disk store in %.1fs", total, time.time() - t0)
+    logger.info("Indexed %d S2/S3 records into SQLite disk store in %.1fs", total, time.time() - t0)
 
-    # -- 2. Deterministic sort of posting lists -------------------------------
-    for key in name_exact:
-        name_exact[key].sort()
-    for key in token_postings:
-        token_postings[key].sort()
-    for key in address_token_postings:
-        address_token_postings[key].sort()
-
-    # -- 3. Compute source SHA-256 fingerprints ------------------------------
+    # -- 2. Compute source SHA-256 fingerprints ------------------------------
     s2_fp = compute_file_fingerprint(source2_path)
     s3_fp = compute_file_fingerprint(source3_path)
 
-    # -- 4. Create and persist manifest + index ------------------------------
+    # -- 3. Create and persist manifest + index ------------------------------
     manifest = IndexManifest(
         work_dir=str(blocking_dir),
         source2_path=str(source2_path.resolve()),
@@ -443,11 +552,6 @@ def build_index(
         json.dump(manifest.to_dict(), f, indent=2)
 
     index_data = {
-        "name_exact": name_exact,
-        "token_postings": token_postings,
-        "token_doc_freq": token_doc_freq,
-        "country_entities": country_entities,
-        "address_token_postings": address_token_postings,
         "total_records": total,
     }
     index_path = blocking_dir / "index.pkl"
@@ -485,7 +589,7 @@ def open_index(
         the current code version, or if the source file size/fingerprint or
         split does not match.
     FileNotFoundError
-        If an indexed source file or the index pickle file is missing.
+        If an indexed source file, SQLite records.db store, or index pickle is missing.
     """
     if isinstance(manifest, (str, Path)):
         manifest_path = Path(manifest)
@@ -541,27 +645,32 @@ def open_index(
                 )
 
     blocking_dir = Path(manifest.work_dir)
+    db_path = blocking_dir / "records.db"
+    if not db_path.exists():
+        raise FileNotFoundError(
+            f"Index record store missing: {db_path} does not exist. Rebuild the index."
+        )
+
     index_path = blocking_dir / "index.pkl"
     if not index_path.exists():
         raise FileNotFoundError(f"Index file missing: {index_path}")
 
-    logger.info("Loading index from %s ...", index_path)
+    logger.info("Loading index from %s ...", blocking_dir)
     t0 = time.time()
 
     with index_path.open("rb") as f:
         data = pickle.load(f)  # noqa: S301
 
-    db_path = blocking_dir / "records.db"
     store = IndexStore(
         records=data.get("records"),
-        name_exact_index=data["name_exact"],
-        token_postings=data["token_postings"],
-        token_doc_freq=data["token_doc_freq"],
-        country_entities=data["country_entities"],
-        address_token_postings=data["address_token_postings"],
-        total_records=data["total_records"],
+        name_exact_index=data.get("name_exact"),
+        token_postings=data.get("token_postings"),
+        token_doc_freq=data.get("token_doc_freq"),
+        country_entities=data.get("country_entities"),
+        address_token_postings=data.get("address_token_postings"),
+        total_records=data.get("total_records", manifest.record_count),
         manifest=manifest,
-        db_path=db_path if db_path.exists() else None,
+        db_path=db_path,
     )
 
     logger.info(

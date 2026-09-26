@@ -343,10 +343,17 @@ class TestStaleIndexValidation:
 
     def test_open_index_expected_split_validation(self, tmp_path: Path) -> None:
         """open_index rejects opening an index with the wrong expected split."""
+        data_dir = tmp_path / "custom"
+        data_dir.mkdir()
+        s2 = data_dir / "source2.tsv"
+        s3 = data_dir / "source3.tsv"
+        s2.write_text((FIXTURES / "source2.tsv").read_text(encoding="utf-8"), encoding="utf-8")
+        s3.write_text((FIXTURES / "source3.tsv").read_text(encoding="utf-8"), encoding="utf-8")
+
         manifest = build_index(
-            FIXTURES / "source2.tsv",
-            FIXTURES / "source3.tsv",
-            tmp_path,
+            s2,
+            s3,
+            tmp_path / "work",
             IndexConfig(split="train"),
         )
         assert manifest.split == "train"
@@ -358,6 +365,31 @@ class TestStaleIndexValidation:
         # Mismatched expected_split fails
         with pytest.raises(ValueError, match="Index split mismatch"):
             open_index(manifest, expected_split="test")
+
+    def test_cannot_override_detected_split(self, tmp_path: Path) -> None:
+        """build_index forbids overriding detected split with conflicting config.split."""
+        with pytest.raises(ValueError, match="Cannot override detected split 'fixture' with conflicting config.split 'train'"):
+            build_index(
+                FIXTURES / "source2.tsv",
+                FIXTURES / "source3.tsv",
+                tmp_path,
+                IndexConfig(split="train"),
+            )
+
+    def test_open_index_missing_sqlite_store_raises(self, tmp_path: Path) -> None:
+        """open_index rejects opening an index whose SQLite records.db is missing."""
+        manifest = build_index(
+            FIXTURES / "source2.tsv",
+            FIXTURES / "source3.tsv",
+            tmp_path,
+            IndexConfig(),
+        )
+        db_path = tmp_path / "blocking" / "records.db"
+        assert db_path.exists()
+        db_path.unlink()
+
+        with pytest.raises(FileNotFoundError, match="Index record store missing"):
+            open_index(manifest)
 
     def test_build_index_mixed_splits_raises(self, tmp_path: Path) -> None:
         """build_index refuses to index source files from conflicting splits."""
