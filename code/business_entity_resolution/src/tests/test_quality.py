@@ -133,4 +133,3 @@ def test_streaming_memory_efficiency(tmp_path):
     assert report.total_rows == num_rows
     assert report.valid_rows == num_rows
     assert report.is_valid
-

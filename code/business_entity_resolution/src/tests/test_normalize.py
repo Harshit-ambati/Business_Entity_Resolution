@@ -194,4 +194,3 @@ def test_normalize_none_and_unexpected_types():
     assert norm == "12345"
     assert tokens == ("12345",)
     assert normalize_country(42) == "42"
-
