@@ -1,4 +1,4 @@
-"""H0 command surface; production pipeline stages arrive in later PRs."""
+"""Stable command surface; H1 model API is awaiting teammate pipeline stages."""
 
 from __future__ import annotations
 
@@ -11,10 +11,10 @@ COMMANDS = ("index", "train", "evaluate", "predict", "validate")
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Business entity resolution pipeline (H0 contracts only)")
+    parser = argparse.ArgumentParser(description="Business entity resolution pipeline")
     subparsers = parser.add_subparsers(dest="command", required=True)
     for command in COMMANDS:
-        stage = subparsers.add_parser(command, help=f"{command} stage (not implemented in H0)")
+        stage = subparsers.add_parser(command, help=f"{command} stage")
         stage.add_argument("--data-root", type=Path, required=True, help="Directory containing organizer dataset TSVs")
         stage.add_argument("--work-dir", type=Path, required=True, help="Ignored directory for future indexes/models")
         stage.add_argument("--output-dir", type=Path, required=True, help="Ignored directory for future outputs")
@@ -23,6 +23,9 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    if args.command == "train":
+        print("train: H1 pair model API is ready; dataset training awaits merged data, normalization, index and blocking modules", file=sys.stderr)
+        return 3
     print(f"{args.command}: Not implemented in H0", file=sys.stderr)
     return 3
 

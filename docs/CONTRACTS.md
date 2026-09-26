@@ -78,11 +78,15 @@ index_store.get_record(candidate_entity_id) -> NormalizedRecord
 pair_features(s1: NormalizedRecord, candidate: NormalizedRecord,
               retrieval: Candidate) -> fixed-order numeric vector
 train_model(training_pairs, validation_pairs, config) -> ModelManifest
-score_group(s1, group, index_store, model_manifest) -> pair scores in candidate order
+load_model(manifest_path) -> LoadedModel
+score_group(s1, group, index_store, model_manifest: LoadedModel, *,
+            normalization_version: str,
+            index_version: str | None = None,
+            candidate_config_id: str | None = None) -> pair scores in candidate order
 decide_group(source1_entity_id, candidates, pair_scores, config) -> Decision
 ```
 
-The model manifest contains feature names/order, normalization/index versions, training config/seed, model type/license/version, and artifact path. Scores correspond one-to-one with the group's candidates. `decide_group` may return zero or multiple S2/S3 IDs; it cannot add an ID absent from the candidate group. Thresholds are selected on the fixed validation split using Suresh's evaluator. Exact CLI flags are frozen in M0 and documented in the package README; required commands are `index`, `train`, `evaluate`, `predict`, and `validate`.
+The model manifest contains feature names/order, normalization/index versions, training config/seed, model type/license/version, and artifact path. `load_model` checks the manifest and artifact, then returns a reusable loaded model for group scoring; despite the historical `model_manifest` argument name, pass this `LoadedModel`, not the metadata-only `ModelManifest`. The scorer's keyword-only `normalization_version` must come from the normalization implementation; `index_version` and `candidate_config_id` must come from the index/candidate configuration when recorded in the model manifest. Scoring fails on a declared version/config mismatch instead of silently using incompatible records. Scores correspond one-to-one with the group's candidates. `decide_group` may return zero or multiple S2/S3 IDs; it cannot add an ID absent from the candidate group. Thresholds are selected on the fixed validation split using Suresh's evaluator. Exact CLI flags are frozen in M0 and documented in the package README; required commands are `index`, `train`, `evaluate`, `predict`, and `validate`.
 
 ### Suresh: `ber/metrics.py`, `ber/output.py`
 
